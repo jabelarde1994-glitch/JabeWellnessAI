@@ -1,0 +1,25 @@
+# Xcode build output
+build/
+DerivedData/
+*.xcarchive
+
+# User-specific Xcode settings
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# CocoaPods
+Pods/
+
+# Swift Package Manager
+.build/
+*.resolved
+
+# macOS
+.DS_Store
+
+# API keys / secrets — never commit these
+*.plist.bak
+Secrets.swift
+APIKeys.swift
+SecretsStore.swift
