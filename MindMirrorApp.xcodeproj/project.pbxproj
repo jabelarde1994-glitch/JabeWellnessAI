@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		3868663B2FD45DDE00A06BBD /* Storekit.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 3868663A2FD45DDE00A06BBD /* Storekit.storekit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		38D1ED2B2FB4B5E000DB02F3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +28,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		3868663A2FD45DDE00A06BBD /* Storekit.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; name = Storekit.storekit; path = MindMirrorApp/Storekit.storekit; sourceTree = "<group>"; };
 		38D1ED192FB4B5DE00DB02F3 /* MindMirrorApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MindMirrorApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		38D1ED2A2FB4B5E000DB02F3 /* MindMirrorAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MindMirrorAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		38D1ED342FB4B5E000DB02F3 /* MindMirrorAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MindMirrorAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -88,6 +93,7 @@
 		38D1ED102FB4B5DE00DB02F3 = {
 			isa = PBXGroup;
 			children = (
+				3868663A2FD45DDE00A06BBD /* Storekit.storekit */,
 				38D1ED1B2FB4B5DE00DB02F3 /* MindMirrorApp */,
 				38D1ED2D2FB4B5E000DB02F3 /* MindMirrorAppTests */,
 				38D1ED372FB4B5E000DB02F3 /* MindMirrorAppUITests */,
@@ -225,6 +231,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3868663B2FD45DDE00A06BBD /* Storekit.storekit in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

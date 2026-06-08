@@ -1142,16 +1142,20 @@ struct ContentView: View {
                     .padding(.vertical, 10)
                     .animation(.easeInOut(duration: 0.25), value: viewModel.isLoading)
                 }
-                .onTapGesture {
-                    UIApplication.shared.sendAction(
-                        #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
-                    )
-                }
+                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: viewModel.messages.count) { _, _ in
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
                 }
                 .onChange(of: viewModel.isLoading) { _, _ in
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
                 }
             }
 
