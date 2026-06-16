@@ -718,8 +718,7 @@ final class JournalViewModel: ObservableObject {
         guard !text.isEmpty, !isLoading else { return }
 
         let mood = emotionDetector.detectEmotion(from: text)
-        currentMood  = mood
-        currentInput = ""
+        if mood != .neutral { currentMood = mood }
 
         append(ChatMessage(content: text, isUser: true, mood: mood, timestamp: Date()))
 
