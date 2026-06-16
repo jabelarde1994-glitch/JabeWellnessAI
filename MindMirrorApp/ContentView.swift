@@ -201,12 +201,32 @@ final class EmotionDetector {
 
     func detectEmotion(from text: String) -> MoodType {
 
+        let negations: Set<String> = ["not", "no", "never", "don't", "dont", "without", "isn't", "isnt", "am not"]
         let lowercase = text.lowercased()
+        let words = lowercase
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+            .filter { !$0.isEmpty }
 
         var scores: [MoodType: Int] = [:]
 
         for (mood, keywords) in emotionMap {
-            scores[mood] = keywords.filter { lowercase.contains($0) }.count
+            var score = 0
+            for keyword in keywords {
+                if keyword.contains(" ") {
+                    if lowercase.contains(keyword) { score += 1 }
+                } else {
+                    for (i, word) in words.enumerated() {
+                        if word == keyword || word.hasPrefix(keyword) {
+                            let window = words[max(0, i - 2) ..< i]
+                            if !window.contains(where: { negations.contains($0) }) {
+                                score += 1
+                            }
+                        }
+                    }
+                }
+            }
+            scores[mood] = score
         }
 
         guard let best = scores.max(by: { $0.value < $1.value }),
@@ -721,7 +741,7 @@ final class JournalViewModel: ObservableObject {
         if mood != .neutral { currentMood = mood }
         currentInput = ""
 
-        append(ChatMessage(content: text, isUser: true, mood: mood, timestamp: Date()))
+        append(ChatMessage(content: text, isUser: true, mood: currentMood, timestamp: Date()))
 
         if safetyChecker.containsRisk(text) {
             append(ChatMessage(content: safetyChecker.crisisResponse, isUser: false, mood: .sad, timestamp: Date()))
