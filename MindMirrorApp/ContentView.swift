@@ -187,7 +187,7 @@ final class EmotionDetector {
         ]),
 
         (.anxious, [
-            "anxious", "worried", "nervous", "scared", "afraid", "stress",
+            "anxious", "worried", "nervous", "scared", "afraid",
             "stressed", "panic", "overwhelmed", "dread", "uneasy", "tense",
             "restless", "fear", "overthinking", "overthink", "racing"
         ]),
