@@ -1075,6 +1075,7 @@ struct InputBar: View {
                 // Send button
                 Button {
                     focused = false
+                    if voice.isRecording { voice.stopRecording() }
                     onSend()
                 } label: {
                     ZStack {
@@ -1187,6 +1188,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showJournalEntry) {
             NewJournalEntryView(preselectedMood: viewModel.currentMood)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .init("ClearActiveChat"))) { _ in
+            viewModel.messages = []
+            viewModel.currentMood = .neutral
+            viewModel.currentInput = ""
         }
     }
 }
@@ -1609,7 +1615,10 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .alert("Clear Chat History?", isPresented: $showClearConfirm) {
-                Button("Clear", role: .destructive) { storage.clearAllSessions() }
+                Button("Clear", role: .destructive) {
+                    storage.clearAllSessions()
+                    NotificationCenter.default.post(name: .init("ClearActiveChat"), object: nil)
+                }
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This will permanently delete all saved conversations.")

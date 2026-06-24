@@ -39,6 +39,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Storekit.storekit,
 			);
 			target = 38D1ED182FB4B5DE00DB02F3 /* MindMirrorApp */;
 		};
