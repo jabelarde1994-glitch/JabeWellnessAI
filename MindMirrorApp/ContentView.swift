@@ -418,7 +418,7 @@ final class PremiumManager: ObservableObject {
     @Published var showPaywall: Bool = false
 
     // Replace with your App Store Connect product ID before submitting
-    private let productID = "com.mindmirror.premium"
+    private let productID = "com.jabe.premium"
     private let trialDays = 7
 
     private var isPurchased: Bool {
@@ -1640,12 +1640,12 @@ struct SettingsView: View {
         let comps     = Calendar.current.dateComponents([.hour, .minute], from: reminderTime)
         let trigger   = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "mindmirror.daily", content: content, trigger: trigger)
+            UNNotificationRequest(identifier: "jabe.daily", content: content, trigger: trigger)
         )
     }
 
     private func cancelReminder() {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["mindmirror.daily"])
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["jabe.daily"])
     }
 }
 
