@@ -1,5 +1,5 @@
 //+-------------------------------------+//
-// MindMirror
+// Jabe Wellness AI
 // Creator: Jabe
 // AI Emotional Wellness Chatbot
 // ENHANCED VERSION v3 — Premium Features
@@ -596,7 +596,7 @@ final class AIService {
     private let apiKey = Secrets.groqAPIKey
 
     private let systemPrompt = """
-    You are MindMirror, a warm and emotionally supportive AI wellness companion.
+    You are Jabe, a warm and emotionally supportive AI wellness companion.
 
     Personality:
     - Warm, calm, and deeply caring
@@ -899,7 +899,7 @@ struct ChatBubble: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 5) {
                         Image(systemName: "sparkles").font(.caption2).foregroundColor(.purple)
-                        Text("MindMirror").font(.caption2).fontWeight(.semibold).foregroundColor(.purple)
+                        Text("Jabe").font(.caption2).fontWeight(.semibold).foregroundColor(.purple)
                     }
                     Text(message.content)
                         .padding(.horizontal, 16)
@@ -935,7 +935,7 @@ struct AppHeader: View {
             HStack(alignment: .center) {
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("MindMirror").font(.title2).fontWeight(.bold)
+                    Text("Jabe").font(.title2).fontWeight(.bold)
                     Text("Your emotional wellness companion").font(.caption).foregroundColor(.secondary)
                 }
 
@@ -989,7 +989,7 @@ struct EmptyStateView: View {
 
             VStack(spacing: 8) {
                 Text("How are you feeling today?").font(.title3).fontWeight(.semibold)
-                Text("Share anything on your mind.\nMindMirror is here to listen.")
+                Text("Share anything on your mind.\nJabe is here to listen.")
                     .font(.subheadline).foregroundColor(.secondary).multilineTextAlignment(.center)
             }
         }
@@ -1432,14 +1432,14 @@ struct OnboardingView: View {
     }
 
     private let pages: [PageData] = [
-        PageData(title: "Welcome to\nMindMirror",
+        PageData(title: "Welcome to\nJabe",
                  subtitle: "Your personal AI wellness companion, here to listen without judgment.",
                  icon: "", color: Color(red: 0.52, green: 0.22, blue: 0.88)),
         PageData(title: "Chat Anytime",
                  subtitle: "Share how you're feeling and get warm, thoughtful responses whenever you need.",
                  icon: "bubble.left.and.bubble.right.fill", color: Color(red: 0.35, green: 0.55, blue: 0.95)),
         PageData(title: "Track Your Mood",
-                 subtitle: "MindMirror detects your emotional state and tailors every response to how you feel.",
+                 subtitle: "Jabe detects your emotional state and tailors every response to how you feel.",
                  icon: "face.smiling.fill", color: Color(red: 0.95, green: 0.55, blue: 0.15)),
         PageData(title: "Keep a Journal",
                  subtitle: "Reflect on your day and save mood-linked entries to see your emotional journey.",
@@ -1606,7 +1606,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("App",       value: "MindMirror")
+                    LabeledContent("App",       value: "Jabe Wellness AI")
                     LabeledContent("Version",   value: "1.0.0")
                     LabeledContent("Developer", value: "Jabe")
                     LabeledContent("AI Model",  value: "Llama 3.3 via Groq")
@@ -1634,7 +1634,7 @@ struct SettingsView: View {
     private func scheduleReminder() {
         cancelReminder()
         let content   = UNMutableNotificationContent()
-        content.title = "MindMirror"
+        content.title = "Jabe"
         content.body  = "How are you feeling today? 💙 Take a moment to check in."
         content.sound = .default
         let comps     = Calendar.current.dateComponents([.hour, .minute], from: reminderTime)
@@ -2179,7 +2179,7 @@ struct PremiumPaywallView: View {
                     // Header
                     VStack(spacing: 14) {
                         BrainLogoView(size: 80)
-                        Text("MindMirror Premium")
+                        Text("Jabe Premium")
                             .font(.largeTitle).fontWeight(.bold)
 
                         if premium.isInTrial {
@@ -2410,7 +2410,7 @@ struct SplashScreen: View {
     @State private var showSubtitle = false
     @State private var isActive     = false
 
-    private let titleText    = "MindMirror"
+    private let titleText    = "Jabe"
     private let typingSpeed: Double = 0.09
 
     var body: some View {
@@ -2462,7 +2462,7 @@ struct SplashScreen: View {
 //*======================================================================*//
 
 @main
-struct MindMirrorApp: App {
+struct JabeWellnessAIApp: App {
 
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 

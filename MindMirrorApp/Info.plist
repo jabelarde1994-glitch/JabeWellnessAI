@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>MindMirror needs microphone access for voice input.</string>
+	<string>Jabe Wellness AI needs microphone access for voice input.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>MindMirror uses speech recognition to let you speak your thoughts.</string>
+	<string>Jabe Wellness AI uses speech recognition to let you speak your thoughts.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
