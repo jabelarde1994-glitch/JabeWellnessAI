@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import DeviceCheck
 @testable import JabeWellnessAI
 
 struct JabeWellnessAITests {
@@ -284,5 +285,108 @@ struct JabeWellnessAITests {
         #expect(dayCount(3) == "3 days")
         #expect(!dayCount(3).contains("left"))
         #expect(!dayCount(3).hasSuffix(" "))
+    }
+}
+
+// MARK: - AttestationManager (fakes only: no network, no App Attest hardware)
+
+final class FakeAttester: DeviceAttesting {
+    var isSupported = true
+    var generated = 0
+    var failAssertionOnce = false
+    func generateKey() async throws -> String { generated += 1; return "key-\(generated)" }
+    func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data { Data([1]) }
+    func generateAssertion(_ keyId: String, clientDataHash: Data) async throws -> Data {
+        if failAssertionOnce { failAssertionOnce = false; throw DCError(.invalidKey) }
+        return Data([2])
+    }
+}
+
+final class FakeTransport: AttestationTransport {
+    var knownKeys: Set<String> = []
+    var attestCalls = 0, tokenCalls = 0
+    var tokenToReturn = "tok-1"
+    var rejectAttest = false
+    func challenge() async throws -> String { "chal" }
+    func attest(keyId: String, attestation: Data, challenge: String) async throws {
+        attestCalls += 1
+        if rejectAttest { throw AttestationTransportError.rejected }
+        knownKeys.insert(keyId)
+    }
+    func token(keyId: String, assertion: Data, challenge: String) async throws -> (token: String, expiresIn: Int) {
+        tokenCalls += 1
+        guard knownKeys.contains(keyId) else { throw AttestationTransportError.unknownKey }
+        return (tokenToReturn, 900)
+    }
+}
+
+@MainActor
+struct AttestationManagerTests {
+    private func makeDefaults() -> UserDefaults {
+        let name = "attest-test-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: name) ?? .standard
+        d.removePersistentDomain(forName: name)
+        return d
+    }
+
+    @Test func firstUseAttestsOnceThenReturnsToken() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
+        #expect(try await m.validToken() == "tok-1")
+        #expect(t.attestCalls == 1)
+        #expect(a.generated == 1)
+    }
+
+    @Test func cachedTokenIsReusedWithoutNetwork() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
+        _ = try await m.validToken()
+        _ = try await m.validToken()
+        #expect(t.tokenCalls == 1)
+    }
+
+    @Test func expiredTokenIsRefreshedWithoutReattesting() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        var clock = Date(timeIntervalSince1970: 1_000)
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults(), now: { clock })
+        _ = try await m.validToken()
+        clock = clock.addingTimeInterval(900)
+        t.tokenToReturn = "tok-2"
+        #expect(try await m.validToken() == "tok-2")
+        #expect(t.attestCalls == 1)
+    }
+
+    @Test func unknownKeyTriggersOneReattestNotALoop() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let d = makeDefaults()
+        d.set("stale-key", forKey: "jabe.attestKeyId")   // iOS/Worker no longer know it
+        let m = AttestationManager(attester: a, transport: t, defaults: d)
+        #expect(try await m.validToken() == "tok-1")
+        #expect(t.attestCalls == 1)
+        #expect(a.generated == 1)
+    }
+
+    @Test func invalidKeyFromIOSRegeneratesAndReattests() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let d = makeDefaults()
+        let m = AttestationManager(attester: a, transport: t, defaults: d)
+        _ = try await m.validToken()                       // attests key-1
+        m.invalidateToken()
+        a.failAssertionOnce = true                          // iOS deleted the key (reinstall)
+        #expect(try await m.validToken() == "tok-1")
+        #expect(a.generated == 2)
+    }
+
+    @Test func rejectedAttestationFailsClosed() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        t.rejectAttest = true
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
+        await #expect(throws: AttestationError.self) { _ = try await m.validToken() }
+    }
+
+    @Test func unsupportedDeviceFailsClosed() async throws {
+        let a = FakeAttester(); a.isSupported = false
+        let m = AttestationManager(attester: a, transport: FakeTransport(), defaults: makeDefaults())
+        await #expect(throws: AttestationError.self) { _ = try await m.validToken() }
     }
 }
