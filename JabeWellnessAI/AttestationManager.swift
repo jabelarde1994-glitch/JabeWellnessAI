@@ -47,6 +47,7 @@ final class AttestationManager {
     private let now: () -> Date
     private var cachedToken: String?
     private var tokenExpiry: Date = .distantPast
+    private var inFlight: Task<String, Error>?
 
     init(attester: DeviceAttesting,
          transport: AttestationTransport,
@@ -68,13 +69,21 @@ final class AttestationManager {
         if let token = cachedToken, now() < tokenExpiry.addingTimeInterval(-60) { return token }
         guard attester.isSupported else { throw AttestationError.unsupported }
 
-        do {
-            return try await refreshToken(allowReattest: true)
-        } catch let error as AttestationError {
-            throw error
-        } catch {
-            throw AttestationError.unavailable
+        // Coalesce: concurrent callers join one refresh. Separate refreshes would each take a counter
+        // from the same key and the Worker rejects out-of-order counters (spurious .rejected).
+        if let running = inFlight { return try await running.value }
+        let task = Task { [self] () throws -> String in
+            do {
+                return try await refreshToken(allowReattest: true)
+            } catch let error as AttestationError {
+                throw error
+            } catch {
+                throw AttestationError.unavailable
+            }
         }
+        inFlight = task
+        defer { inFlight = nil }
+        return try await task.value
     }
 
     private func refreshToken(allowReattest: Bool) async throws -> String {

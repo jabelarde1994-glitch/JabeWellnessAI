@@ -294,7 +294,10 @@ final class FakeAttester: DeviceAttesting {
     var isSupported = true
     var generated = 0
     var failAssertionOnce = false
-    func generateKey() async throws -> String { generated += 1; return "key-\(generated)" }
+    func generateKey() async throws -> String {
+        try await Task.sleep(nanoseconds: 20_000_000)   // suspend so overlapping callers interleave
+        generated += 1; return "key-\(generated)"
+    }
     func attestKey(_ keyId: String, clientDataHash: Data) async throws -> Data { Data([1]) }
     func generateAssertion(_ keyId: String, clientDataHash: Data) async throws -> Data {
         if failAssertionOnce { failAssertionOnce = false; throw DCError(.invalidKey) }
@@ -307,7 +310,7 @@ final class FakeTransport: AttestationTransport {
     var attestCalls = 0, tokenCalls = 0
     var tokenToReturn = "tok-1"
     var rejectAttest = false
-    func challenge() async throws -> String { "chal" }
+    func challenge() async throws -> String { try await Task.sleep(nanoseconds: 5_000_000); return "chal" }
     func attest(keyId: String, attestation: Data, challenge: String) async throws {
         attestCalls += 1
         if rejectAttest { throw AttestationTransportError.rejected }
@@ -315,6 +318,7 @@ final class FakeTransport: AttestationTransport {
     }
     func token(keyId: String, assertion: Data, challenge: String) async throws -> (token: String, expiresIn: Int) {
         tokenCalls += 1
+        try await Task.sleep(nanoseconds: 5_000_000)
         guard knownKeys.contains(keyId) else { throw AttestationTransportError.unknownKey }
         return (tokenToReturn, 900)
     }
@@ -381,12 +385,25 @@ struct AttestationManagerTests {
         let a = FakeAttester(), t = FakeTransport()
         t.rejectAttest = true
         let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
-        await #expect(throws: AttestationError.self) { _ = try await m.validToken() }
+        await #expect(throws: AttestationError.rejected) { _ = try await m.validToken() }
     }
 
     @Test func unsupportedDeviceFailsClosed() async throws {
         let a = FakeAttester(); a.isSupported = false
         let m = AttestationManager(attester: a, transport: FakeTransport(), defaults: makeDefaults())
-        await #expect(throws: AttestationError.self) { _ = try await m.validToken() }
+        await #expect(throws: AttestationError.unsupported) { _ = try await m.validToken() }
+    }
+
+    @Test func concurrentCallsShareOneRefresh() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
+        async let first = m.validToken()
+        async let second = m.validToken()
+        let (x, y) = try await (first, second)
+        #expect(x == "tok-1")
+        #expect(y == "tok-1")
+        #expect(a.generated == 1)
+        #expect(t.attestCalls == 1)
+        #expect(t.tokenCalls == 1)
     }
 }
