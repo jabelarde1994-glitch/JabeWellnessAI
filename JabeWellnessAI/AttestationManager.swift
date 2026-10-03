@@ -124,3 +124,61 @@ final class AttestationManager {
         Data(SHA256.hash(data: Data(challenge.utf8)))
     }
 }
+
+/// HTTP transport to the Jabe Worker. Only 401 `unknown_key` and 403 `attestation_rejected` /
+/// `assertion_rejected` are definitive; everything else non-200 (including a transient
+/// 403 `bad_challenge`) surfaces as a plain URLError so the manager treats it as "unavailable".
+struct WorkerTransport: AttestationTransport {
+    let baseURL: URL
+    let session: URLSession
+
+    init(baseURL: URL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+    }
+
+    private struct ErrorBody: Decodable { let error: String }
+
+    private func post(_ path: String, _ json: [String: String]) async throws -> Data {
+        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 200 { return data }
+        let code = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
+        switch (http.statusCode, code) {
+        case (401, "unknown_key"):
+            throw AttestationTransportError.unknownKey
+        case (403, "attestation_rejected"), (403, "assertion_rejected"):
+            throw AttestationTransportError.rejected
+        default:
+            throw URLError(.badServerResponse)
+        }
+    }
+
+    private func object(_ data: Data) throws -> [String: Any] {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw URLError(.cannotParseResponse)
+        }
+        return obj
+    }
+
+    func challenge() async throws -> String {
+        let obj = try object(try await post("attest/challenge", [:]))
+        guard let c = obj["challenge"] as? String else { throw URLError(.cannotParseResponse) }
+        return c
+    }
+
+    func attest(keyId: String, attestation: Data, challenge: String) async throws {
+        _ = try await post("attest", ["keyId": keyId, "attestation": attestation.base64EncodedString(), "challenge": challenge])
+    }
+
+    func token(keyId: String, assertion: Data, challenge: String) async throws -> (token: String, expiresIn: Int) {
+        let obj = try object(try await post("token", ["keyId": keyId, "assertion": assertion.base64EncodedString(), "challenge": challenge]))
+        guard let t = obj["token"] as? String else { throw URLError(.cannotParseResponse) }
+        return (t, (obj["expiresIn"] as? Int) ?? 900)
+    }
+}

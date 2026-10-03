@@ -407,3 +407,197 @@ struct AttestationManagerTests {
         #expect(t.tokenCalls == 1)
     }
 }
+
+// MARK: - WorkerTransport (URLProtocol stub)
+
+final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _handler: ((URLRequest) -> (Int, Data))?
+    nonisolated(unsafe) private static var _captured: [URLRequest] = []
+    nonisolated(unsafe) private static var _bodies: [Data] = []
+
+    static func respond(_ status: Int, _ body: String) {
+        lock.lock(); defer { lock.unlock() }
+        _handler = { _ in (status, Data(body.utf8)) }
+        _captured = []; _bodies = []
+    }
+    static var captured: [URLRequest] { lock.lock(); defer { lock.unlock() }; return _captured }
+    static var bodies: [Data] { lock.lock(); defer { lock.unlock() }; return _bodies }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var body = Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let n = stream.read(&buf, maxLength: buf.count)
+                if n <= 0 { break }
+                body.append(buf, count: n)
+            }
+            stream.close()
+        } else if let b = request.httpBody {
+            body = b
+        }
+        Self.lock.lock()
+        Self._captured.append(request)
+        Self._bodies.append(body)
+        let handler = Self._handler
+        Self.lock.unlock()
+        let (status, data) = handler?(request) ?? (500, Data())
+        guard let url = request.url,
+              let resp = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return
+        }
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+@Suite(.serialized)
+struct WorkerTransportTests {
+    private let base = URL(string: "https://worker.example.test")!
+
+    private func makeTransport(_ url: URL? = nil) -> WorkerTransport {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [StubURLProtocol.self]
+        return WorkerTransport(baseURL: url ?? base, session: URLSession(configuration: cfg))
+    }
+
+    private func expectURLError<T>(_ code: URLError.Code? = nil, _ op: () async throws -> T) async {
+        do {
+            _ = try await op()
+            Issue.record("expected a throw")
+        } catch let e as URLError {
+            if let code { #expect(e.code == code) }
+        } catch {
+            Issue.record("expected URLError, got \(error)")
+        }
+    }
+
+    private func tokenCall(_ t: WorkerTransport) async throws -> (token: String, expiresIn: Int) {
+        try await t.token(keyId: "k", assertion: Data([1]), challenge: "c")
+    }
+
+    @Test func challengeParsed() async throws {
+        StubURLProtocol.respond(200, #"{"challenge":"abc"}"#)
+        let c = try await makeTransport().challenge()
+        #expect(c == "abc")
+    }
+
+    @Test func challengeMissingFieldThrowsCannotParse() async {
+        StubURLProtocol.respond(200, #"{"nope":"x"}"#)
+        let t = makeTransport()
+        await expectURLError(.cannotParseResponse) { try await t.challenge() }
+    }
+
+    @Test func attestSendsPathMethodHeadersAndBody() async throws {
+        StubURLProtocol.respond(200, #"{"ok":true}"#)
+        let data = Data([0, 1, 2, 250])
+        try await makeTransport().attest(keyId: "key-1", attestation: data, challenge: "chal")
+        let req = StubURLProtocol.captured.first
+        #expect(req?.httpMethod == "POST")
+        #expect(req?.url?.path == "/attest")
+        #expect(req?.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(req?.timeoutInterval == 30)
+        let body = StubURLProtocol.bodies.first ?? Data()
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: String]
+        #expect(obj?["keyId"] == "key-1")
+        #expect(obj?["attestation"] == data.base64EncodedString())
+        #expect(obj?["challenge"] == "chal")
+    }
+
+    @Test func challengeUsesChallengePathAndEmptyObjectBody() async throws {
+        StubURLProtocol.respond(200, #"{"challenge":"abc"}"#)
+        _ = try await makeTransport().challenge()
+        #expect(StubURLProtocol.captured.first?.url?.path == "/attest/challenge")
+        #expect(StubURLProtocol.captured.first?.httpMethod == "POST")
+        let obj = try JSONSerialization.jsonObject(with: StubURLProtocol.bodies.first ?? Data()) as? [String: Any]
+        #expect(obj?.isEmpty == true)
+    }
+
+    @Test func tokenSendsAssertionBodyAndParses() async throws {
+        StubURLProtocol.respond(200, #"{"token":"tok","expiresIn":600}"#)
+        let data = Data([9, 8, 7])
+        let r = try await makeTransport().token(keyId: "k2", assertion: data, challenge: "c2")
+        #expect(r.token == "tok")
+        #expect(r.expiresIn == 600)
+        #expect(StubURLProtocol.captured.first?.url?.path == "/token")
+        let obj = try JSONSerialization.jsonObject(with: StubURLProtocol.bodies.first ?? Data()) as? [String: String]
+        #expect(obj?["keyId"] == "k2")
+        #expect(obj?["assertion"] == data.base64EncodedString())
+        #expect(obj?["challenge"] == "c2")
+    }
+
+    @Test func tokenExpiresInDefaultsTo900() async throws {
+        StubURLProtocol.respond(200, #"{"token":"tok"}"#)
+        let r = try await tokenCall(makeTransport())
+        #expect(r.expiresIn == 900)
+    }
+
+    @Test func tokenNonJSON200ThrowsCannotParse() async {
+        StubURLProtocol.respond(200, "not json at all")
+        let t = makeTransport()
+        await expectURLError(.cannotParseResponse) { try await tokenCall(t) }
+    }
+
+    @Test func unknownKeyMapsToUnknownKey() async {
+        StubURLProtocol.respond(401, #"{"error":"unknown_key"}"#)
+        let t = makeTransport()
+        do {
+            _ = try await tokenCall(t)
+            Issue.record("expected throw")
+        } catch let e as AttestationTransportError {
+            #expect(e == .unknownKey)
+        } catch {
+            Issue.record("wrong error \(error)")
+        }
+    }
+
+    @Test func rejectedBodiesMapToRejected() async {
+        for body in [#"{"error":"attestation_rejected"}"#, #"{"error":"assertion_rejected"}"#] {
+            StubURLProtocol.respond(403, body)
+            let t = makeTransport()
+            do {
+                _ = try await tokenCall(t)
+                Issue.record("expected throw")
+            } catch let e as AttestationTransportError {
+                #expect(e == .rejected)
+            } catch {
+                Issue.record("wrong error \(error)")
+            }
+        }
+    }
+
+    @Test func otherFailuresAreBadServerResponse() async {
+        let cases: [(Int, String)] = [
+            (403, #"{"error":"bad_challenge"}"#),
+            (401, #"{"error":"something_else"}"#),
+            (401, "garbage"),
+            (403, "garbage"),
+            (400, #"{"error":"bad_request"}"#),
+            (413, ""),
+            (429, #"{"error":"rate_limited"}"#),
+            (503, #"{"error":"unavailable"}"#),
+        ]
+        for (status, body) in cases {
+            StubURLProtocol.respond(status, body)
+            let t = makeTransport()
+            await expectURLError(.badServerResponse) { try await tokenCall(t) }
+        }
+    }
+
+    @Test func baseURLPathAppendedWithAndWithoutTrailingSlash() async throws {
+        for s in ["https://worker.example.test", "https://worker.example.test/", "https://worker.example.test/v1/"] {
+            StubURLProtocol.respond(200, #"{"challenge":"abc"}"#)
+            _ = try await makeTransport(URL(string: s)).challenge()
+            let path = StubURLProtocol.captured.first?.url?.path
+            let expected = s.hasSuffix("/v1/") ? "/v1/attest/challenge" : "/attest/challenge"
+            #expect(path == expected)
+        }
+    }
+}
