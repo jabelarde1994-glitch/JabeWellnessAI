@@ -138,10 +138,10 @@
     </div>
 
     <h1>Privacy Policy</h1>
-    <p class="updated">Last Updated: August 2026</p>
+    <p class="updated">Last Updated: October 2026</p>
 
     <div class="summary-box">
-      <strong>The short version:</strong> Jabe has no account system and collects no personal data about you. Your journal entries never leave your device. The messages you send in chat are passed to the Groq AI service to generate a reply &mdash; that, plus mood labels if you request a Weekly Insight, is everything that leaves your phone. We do not track you, sell your data, or require an account.
+      <strong>The short version:</strong> Jabe has no account system and collects no personal data about you. Your journal entries never leave your device. The messages you send in chat are relayed through Jabe's secure relay (a Cloudflare Worker) to the Groq AI service to generate a reply &mdash; that, plus mood labels if you request a Weekly Insight, is everything that leaves your phone. The relay does not store your messages. We do not track you, sell your data, or require an account.
     </div>
 
     <h2>Overview</h2>
@@ -152,11 +152,11 @@
     <ul>
       <li>Your name, email address, or any account information</li>
       <li>Your location</li>
-      <li>Your device identifiers</li>
+      <li>Your Apple advertising identifier or any identifier that names you</li>
       <li>Advertising or tracking identifiers</li>
       <li>Any biometric data</li>
     </ul>
-    <p>There is no Jabe server. The developer of this app receives none of your content &mdash; not your conversations, not your journal, not your moods.</p>
+    <p>Jabe has no account system and no database of users. To protect the AI service from abuse, your messages pass through a small relay that Jabe runs on Cloudflare. The relay does not store, log, or read the content of your conversations, and the developer of this app receives none of your content &mdash; not your conversations, not your journal, not your moods. To confirm a request comes from a genuine copy of Jabe, the relay keeps one anonymous, randomly generated key ID and a counter for each installation (Apple App Attest). It contains no name, email, or account, and cannot be linked to you.</p>
 
     <h2>What Stays On Your Device</h2>
     <p>The following is stored locally on your iPhone using Apple's on-device storage, and is never uploaded, backed up to a Jabe server, or shared with anyone:</p>
@@ -178,8 +178,9 @@
     <h2>AI Conversations (Groq API)</h2>
     <p>Jabe uses the Groq API to power its AI responses. When you send a message, the text of your conversation is transmitted to Groq's servers solely to generate a response. This transmission:</p>
     <ul>
-      <li>Carries no account, name, email, or device identifier &mdash; Jabe has no account system, so nothing links a message to you personally. The message text itself is whatever you choose to write, so please avoid including details you would not want a third-party AI provider to process.</li>
+      <li>Carries no account, name, or email. It is sent with a short-lived, anonymous verification token (from Apple App Attest) so the relay can tell it came from a genuine copy of Jabe &mdash; Jabe has no account system, so nothing links a message to you personally. The message text itself is whatever you choose to write, so please avoid including details you would not want a third-party AI provider to process.</li>
       <li>Is not stored or used by Jabe beyond generating your response</li>
+      <li>Is processed by Groq under a zero-data-retention setting, which means Groq does not store the content of requests</li>
       <li>Is subject to Groq's own privacy policy at <a href="https://groq.com/privacy" target="_blank">groq.com/privacy</a></li>
     </ul>
     <p>Jabe does not use your conversations for training, analytics, or any other purpose.</p>
@@ -209,6 +210,11 @@
           <td data-label="Service">Groq API</td>
           <td data-label="Purpose">AI chat responses</td>
           <td data-label="Privacy Policy"><a href="https://groq.com/privacy" target="_blank">groq.com/privacy</a></td>
+        </tr>
+        <tr>
+          <td data-label="Service">Cloudflare Workers</td>
+          <td data-label="Purpose">Relay that forwards chat requests; processes request metadata such as IP address as the hosting provider</td>
+          <td data-label="Privacy Policy"><a href="https://www.cloudflare.com/privacypolicy/" target="_blank">cloudflare.com/privacypolicy</a></td>
         </tr>
         <tr>
           <td data-label="Service">Apple SFSpeechRecognizer</td>
