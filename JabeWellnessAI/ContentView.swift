@@ -29,6 +29,12 @@ enum Secrets {
      */
 
     static let groqAPIKey = SecretsStore.groqAPIKey
+
+    // Simulator-only: the simulator cannot attest, so DEBUG simulator builds present this to the
+    // Worker instead. Compiled out of every device build so it cannot ship in the binary.
+    #if targetEnvironment(simulator)
+    static let devBypassSecret = SecretsStore.devBypassSecret
+    #endif
 }
 
 //*======================================================================*//
@@ -807,7 +813,16 @@ final class AIService {
     static let model            = "openai/gpt-oss-120b"
     static let modelDisplayName = "GPT OSS 120B via Groq"
 
-    private let apiKey = Secrets.groqAPIKey
+    /// The relay that holds the Groq key. Chat and Weekly Insight go here; the app no longer sends
+    /// anything to Groq. (`Secrets.groqAPIKey` stays compiled in only until the old key is revoked.)
+    static let workerBaseURL = URL(string: "https://jabe-proxy.jabelarde1994.workers.dev") ?? URL(fileURLWithPath: "/")
+
+    /// One manager for the whole app: chat and Weekly Insight each own an AIService, and a shared
+    /// manager is what coalesces their concurrent token refreshes into one App Attest round trip.
+    @MainActor private static let attestation = AttestationManager(
+        attester: SystemDeviceAttester(),
+        transport: WorkerTransport(baseURL: AIService.workerBaseURL)
+    )
 
     private let systemPrompt = """
     You are Jabe, a warm and emotionally supportive AI wellness companion.
@@ -836,6 +851,9 @@ final class AIService {
     static let serviceUnavailableMessage =
         "I can't reach the AI service right now. Let's try again in a moment. 🌿"
 
+    static let verificationFailedMessage =
+        "I couldn't verify this device just now. Please try again in a moment. 🌿"
+
     static let offlineMessage =
         "It looks like you're offline. Please check your connection and we'll pick this up. 🌿"
 
@@ -847,6 +865,7 @@ final class AIService {
     /// `DecodingError` or `URLError` description would otherwise reach a user in a chat bubble.
     /// Only the offline case is actionable, so only that one gets its own advice.
     static func userFacingError(for error: Error) -> String {
+        if error is AttestationError { return verificationFailedMessage }
         if let urlError = error as? URLError {
             switch urlError.code {
             case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
@@ -867,6 +886,7 @@ final class AIService {
     /// printed in DEBUG above, so nothing is lost for support.
     static func userFacingError(for statusCode: Int) -> String {
         switch statusCode {
+        case 401, 403: return verificationFailedMessage
         case 429: return "I need a moment to breathe. 🌿 You've sent a lot of messages quickly — please wait about a minute and try again."
         default:  return serviceUnavailableMessage
         }
@@ -877,16 +897,7 @@ final class AIService {
         mood: MoodType
     ) async throws -> String {
 
-        guard apiKey.starts(with: "gsk_") else {
-            #if DEBUG
-            print("GROQ CONFIG: SecretsStore.groqAPIKey is unset or malformed — no request was sent.")
-            #endif
-            return Self.serviceUnavailableMessage
-        }
-
-        guard let url = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
-            return Self.serviceUnavailableMessage
-        }
+        let url = Self.workerBaseURL.appendingPathComponent("chat")
 
         var messages: [[String: Any]] = [
             ["role": "system", "content": systemPrompt]
@@ -913,15 +924,20 @@ final class AIService {
         request.httpBody   = jsonData
         request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)",  forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        var (data, response) = try await authorizedData(for: request)
+
+        // A 401 means the cached token was refused (expired early, or the Worker lost the key).
+        // Drop it and retry once with a fresh one before surfacing anything to the user.
+        if (response as? HTTPURLResponse)?.statusCode == 401 {
+            await Self.attestation.invalidateToken()
+            (data, response) = try await authorizedData(for: request)
+        }
 
         guard let http = response as? HTTPURLResponse else { return Self.serviceUnavailableMessage }
 
         #if DEBUG
-        print("GROQ STATUS:", http.statusCode)
-        if let raw = String(data: data, encoding: .utf8) { print("GROQ RESPONSE:", raw) }
+        print("PROXY STATUS:", http.statusCode)
         #endif
 
         guard http.statusCode == 200 else {
@@ -932,11 +948,23 @@ final class AIService {
         return decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? "I'm here for you."
     }
 
+    /// Sends the request with whatever credential this build can present. On a device that is a
+    /// short-lived App Attest token; the simulator cannot attest, so it presents the dev bypass
+    /// secret instead (that branch, and the secret, do not exist in device builds).
+    private func authorizedData(for request: URLRequest) async throws -> (Data, URLResponse) {
+        var request = request
+        #if targetEnvironment(simulator)
+        request.setValue(Secrets.devBypassSecret, forHTTPHeaderField: "X-Dev-Bypass")
+        #else
+        let token = try await Self.attestation.validToken()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        #endif
+        return try await URLSession.shared.data(for: request)
+    }
+
     // Generates a short weekly emotional summary from recent sessions and journal entries
     func generateWeeklyInsight(sessions: [ChatSession], journal: [JournalEntry]) async -> String {
-        guard apiKey.starts(with: "gsk_"),
-              let url = URL(string: "https://api.groq.com/openai/v1/chat/completions")
-        else { return "" }
+        let url = Self.workerBaseURL.appendingPathComponent("insight")
 
         // Moods and dates only — never reflection text. The privacy policy promises
         // journal entries stay on the device, and sending excerpts to Groq to build
@@ -965,10 +993,15 @@ final class AIService {
         req.httpBody   = jsonData
         req.timeoutInterval = 30
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("Bearer \(apiKey)",  forHTTPHeaderField: "Authorization")
 
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
+        guard var (data, resp) = try? await authorizedData(for: req) else { return "" }
+        if (resp as? HTTPURLResponse)?.statusCode == 401 {
+            await Self.attestation.invalidateToken()
+            guard let retry = try? await authorizedData(for: req) else { return "" }
+            (data, resp) = retry
+        }
+
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
               let decoded = try? JSONDecoder().decode(GroqResponse.self, from: data)
         else { return "" }
 

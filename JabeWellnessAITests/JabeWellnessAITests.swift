@@ -216,6 +216,25 @@ struct JabeWellnessAITests {
         #expect(message.contains("minute"))
     }
 
+    // Since the Worker proxy, 401/403 mean "this device could not be verified", not a bad key, so
+    // they get their own sentence — still with no provider, credential or screen named.
+    @Test func verificationFailureCopyIsUserSafe() async throws {
+        for status in [401, 403] {
+            let message = AIService.userFacingError(for: status)
+            #expect(message == AIService.verificationFailedMessage)
+            #expect(message != AIService.serviceUnavailableMessage)
+            for term in Self.forbiddenInUserCopy {
+                #expect(!message.contains(term), "HTTP \(status) copy leaks \"\(term)\": \(message)")
+            }
+        }
+    }
+
+    @Test func attestationErrorsMapToTheVerificationMessage() async throws {
+        for error in [AttestationError.rejected, .unsupported, .unavailable] {
+            #expect(AIService.userFacingError(for: error) == AIService.verificationFailedMessage)
+        }
+    }
+
     // The throw path was missed by the first pass at this fix. URLSession throws when offline or
     // timed out, and JSONDecoder throws whenever Groq returns 200 with an unexpected body shape.
     // Both land in JournalViewModel's catch and are rendered as Jabe speaking, so a raw Swift
