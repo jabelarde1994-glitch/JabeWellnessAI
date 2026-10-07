@@ -21,14 +21,7 @@ import Security
 
 enum Secrets {
 
-    /*
-     IMPORTANT: Do NOT hardcode your API key here.
-     Create a Secrets.swift file (already in .gitignore) and add:
-
-         static let groqAPIKey = "gsk_YOUR_KEY_HERE"
-     */
-
-    static let groqAPIKey = SecretsStore.groqAPIKey
+    // The app holds no Groq key: the Worker does. Do not add one back here.
 
     // Simulator-only: the simulator cannot attest, so DEBUG simulator builds present this to the
     // Worker instead. Compiled out of every device build so it cannot ship in the binary.
@@ -814,7 +807,7 @@ final class AIService {
     static let modelDisplayName = "GPT OSS 120B via Groq"
 
     /// The relay that holds the Groq key. Chat and Weekly Insight go here; the app no longer sends
-    /// anything to Groq. (`Secrets.groqAPIKey` stays compiled in only until the old key is revoked.)
+    /// anything to Groq.
     static let workerBaseURL = URL(string: "https://jabe-proxy.jabelarde1994.workers.dev") ?? URL(fileURLWithPath: "/")
 
     /// One manager for the whole app: chat and Weekly Insight each own an AIService, and a shared
