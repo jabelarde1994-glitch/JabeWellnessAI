@@ -101,6 +101,9 @@ final class AttestationManager {
         } catch let error as DCError where error.code == .invalidKey && allowReattest {
             defaults.removeObject(forKey: Self.keyIdDefaultsKey)       // iOS deleted it: start over once
             return try await refreshToken(allowReattest: false)
+        } catch AttestationTransportError.rejected where allowReattest {
+            defaults.removeObject(forKey: Self.keyIdDefaultsKey)       // counter/key out of step: start over once
+            return try await refreshToken(allowReattest: false)
         } catch AttestationTransportError.rejected {
             throw AttestationError.rejected
         }

@@ -329,6 +329,7 @@ final class FakeTransport: AttestationTransport {
     var attestCalls = 0, tokenCalls = 0
     var tokenToReturn = "tok-1"
     var rejectAttest = false
+    var rejectTokenTimes = 0
     func challenge() async throws -> String { try await Task.sleep(nanoseconds: 5_000_000); return "chal" }
     func attest(keyId: String, attestation: Data, challenge: String) async throws {
         attestCalls += 1
@@ -339,6 +340,7 @@ final class FakeTransport: AttestationTransport {
         tokenCalls += 1
         try await Task.sleep(nanoseconds: 5_000_000)
         guard knownKeys.contains(keyId) else { throw AttestationTransportError.unknownKey }
+        if rejectTokenTimes > 0 { rejectTokenTimes -= 1; throw AttestationTransportError.rejected }
         return (tokenToReturn, 900)
     }
 }
@@ -398,6 +400,27 @@ struct AttestationManagerTests {
         a.failAssertionOnce = true                          // iOS deleted the key (reinstall)
         #expect(try await m.validToken() == "tok-1")
         #expect(a.generated == 2)
+    }
+
+    @Test func rejectedTokenReattestsOnceAndRecovers() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
+        _ = try await m.validToken()                       // attests key-1
+        m.invalidateToken()
+        t.rejectTokenTimes = 1                              // counter desync: /token 403s once
+        #expect(try await m.validToken() == "tok-1")
+        #expect(a.generated == 2)                           // threw the key away and attested a fresh one
+        #expect(t.attestCalls == 2)
+    }
+
+    @Test func persistentlyRejectedTokenStopsAfterOneReattest() async throws {
+        let a = FakeAttester(), t = FakeTransport()
+        let m = AttestationManager(attester: a, transport: t, defaults: makeDefaults())
+        _ = try await m.validToken()
+        m.invalidateToken()
+        t.rejectTokenTimes = 99
+        await #expect(throws: AttestationError.rejected) { _ = try await m.validToken() }
+        #expect(a.generated == 2)                           // exactly one retry, no loop
     }
 
     @Test func rejectedAttestationFailsClosed() async throws {
