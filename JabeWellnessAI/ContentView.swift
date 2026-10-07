@@ -419,6 +419,63 @@ final class StreakManager: ObservableObject {
 }
 
 //*======================================================================*//
+// MARK: - Review Prompt
+//*======================================================================*//
+
+/// When it is reasonable to ask for an App Store rating. Pure, so every rule is unit-tested.
+/// Apple decides whether anything is shown (and caps it at 3 a year); this only picks the moment.
+enum ReviewPromptGate {
+
+    static let minStreak        = 3
+    static let minInstallDays   = 7
+    static let minDaysBetween   = 120
+
+    static func shouldAsk(longestStreak: Int, installDate: Date?, lastAsked: Date?,
+                          lastAskedVersion: String?, currentVersion: String, now: Date) -> Bool {
+        guard longestStreak >= minStreak, let installDate else { return false }
+        guard lastAskedVersion != currentVersion else { return false }
+        let cal = Calendar.current
+        guard let installAge = cal.dateComponents([.day], from: installDate, to: now).day,
+              installAge >= minInstallDays else { return false }
+        if let lastAsked {
+            guard let sinceAsk = cal.dateComponents([.day], from: lastAsked, to: now).day,
+                  sinceAsk >= minDaysBetween else { return false }
+        }
+        return true
+    }
+}
+
+enum ReviewPrompt {
+
+    private static let lastAskedKey   = "mm_reviewLastAsked"
+    private static let lastVersionKey = "mm_reviewLastVersion"
+
+    /// Records the ask and then calls `ask`, only when the gate allows it. Recording comes first so a
+    /// crash or an early dismissal can never cause a second ask for the same version.
+    static func askIfEligible(
+        defaults: UserDefaults = .standard,
+        installDate: Date? = TrialAnchorStore.load(),
+        version: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+        now: Date = Date(),
+        ask: () -> Void
+    ) {
+        let lastAsked = defaults.object(forKey: lastAskedKey) as? Date
+        guard ReviewPromptGate.shouldAsk(
+            longestStreak: defaults.integer(forKey: "mm_longestStreak"),
+            installDate: installDate,
+            lastAsked: lastAsked,
+            lastAskedVersion: defaults.string(forKey: lastVersionKey),
+            currentVersion: version,
+            now: now
+        ) else { return }
+
+        defaults.set(now,     forKey: lastAskedKey)
+        defaults.set(version, forKey: lastVersionKey)
+        ask()
+    }
+}
+
+//*======================================================================*//
 // MARK: - Trial Anchor Store
 //*======================================================================*//
 
@@ -2286,6 +2343,7 @@ struct GuidedExercisesView: View {
 struct BreathingExerciseView: View {
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.requestReview) private var requestReview
 
     @State private var phase      = "Tap to Begin"
     @State private var scale: CGFloat = 1.0
@@ -2349,6 +2407,12 @@ struct BreathingExerciseView: View {
         guard remaining > 0 else {
             phase     = "Well done! 🎉"
             isRunning = false
+            // A calm, finished moment: let the celebration land, then maybe ask. Skipped if closed.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard isActive else { return }
+                ReviewPrompt.askIfEligible { requestReview() }
+            }
             return
         }
         animate("Inhale", toScale: 1.5, duration: 4) {
@@ -2376,6 +2440,7 @@ struct BreathingExerciseView: View {
 struct GroundingExerciseView: View {
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.requestReview) private var requestReview
     @State private var step = 0
 
     private let steps: [(Int, String, String, Color)] = [
@@ -2422,6 +2487,11 @@ struct GroundingExerciseView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 72)).foregroundColor(.green)
                             Text("Grounded!").font(.largeTitle).fontWeight(.bold)
+                                .task {
+                                    // Cancelled when the view goes away, so a closed screen never asks.
+                                    guard (try? await Task.sleep(nanoseconds: 1_500_000_000)) != nil else { return }
+                                    ReviewPrompt.askIfEligible { requestReview() }
+                                }
                             Text("You're present, safe, and connected to this moment.")
                                 .font(.body).foregroundColor(.secondary)
                                 .multilineTextAlignment(.center).padding(.horizontal, 28)

@@ -643,3 +643,67 @@ struct WorkerTransportTests {
         }
     }
 }
+
+// MARK: - Review prompt gate
+
+struct ReviewPromptGateTests {
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private func days(_ n: Int) -> Date { Calendar.current.date(byAdding: .day, value: -n, to: now) ?? now }
+
+    private func ask(streak: Int = 3, install: Date? = nil, last: Date? = nil,
+                     lastVersion: String? = nil, version: String = "1.0.2") -> Bool {
+        ReviewPromptGate.shouldAsk(longestStreak: streak, installDate: install ?? days(10),
+                                   lastAsked: last, lastAskedVersion: lastVersion,
+                                   currentVersion: version, now: now)
+    }
+
+    @Test func asksWhenEveryConditionIsMet() { #expect(ask()) }
+
+    @Test func doesNotAskBeforeAThreeDayStreak() { #expect(!ask(streak: 2)) }
+
+    @Test func doesNotAskInTheFirstWeek() { #expect(!ask(install: days(6))) }
+
+    @Test func asksOnceTheInstallIsSevenDaysOld() { #expect(ask(install: days(7))) }
+
+    @Test func doesNotAskWithoutAnInstallDate() {
+        #expect(!ReviewPromptGate.shouldAsk(longestStreak: 5, installDate: nil, lastAsked: nil,
+                                            lastAskedVersion: nil, currentVersion: "1.0.2", now: now))
+    }
+
+    @Test func doesNotAskAgainWithin120Days() {
+        #expect(!ask(last: days(119), lastVersion: "1.0.1"))
+        #expect(ask(last: days(120), lastVersion: "1.0.1"))
+    }
+
+    @Test func doesNotAskTwiceForTheSameVersion() {
+        #expect(!ask(last: days(200), lastVersion: "1.0.2"))
+    }
+
+    @Test func askIfEligibleRecordsTheAskAndAsksOnlyOnce() {
+        let suite = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(5, forKey: "mm_longestStreak")
+        var asked = 0
+
+        ReviewPrompt.askIfEligible(defaults: defaults, installDate: days(10), version: "1.0.2", now: now) { asked += 1 }
+        ReviewPrompt.askIfEligible(defaults: defaults, installDate: days(10), version: "1.0.2", now: now) { asked += 1 }
+
+        #expect(asked == 1)
+        #expect(defaults.string(forKey: "mm_reviewLastVersion") == "1.0.2")
+    }
+
+    @Test func askIfEligibleStaysQuietBelowTheStreak() {
+        let suite = UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(1, forKey: "mm_longestStreak")
+        var asked = 0
+
+        ReviewPrompt.askIfEligible(defaults: defaults, installDate: days(10), version: "1.0.2", now: now) { asked += 1 }
+
+        #expect(asked == 0)
+        #expect(defaults.object(forKey: "mm_reviewLastAsked") == nil)
+    }
+}
