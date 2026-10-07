@@ -156,7 +156,7 @@
       <li>Advertising or tracking identifiers</li>
       <li>Any biometric data</li>
     </ul>
-    <p>Jabe has no account system and no database of users. To protect the AI service from abuse, your messages pass through a small relay that Jabe runs on Cloudflare. The relay does not store, log, or read the content of your conversations, and the developer of this app receives none of your content &mdash; not your conversations, not your journal, not your moods. To confirm a request comes from a genuine copy of Jabe, the relay keeps one anonymous, randomly generated key ID and a counter for each installation (Apple App Attest). It contains no name, email, or account, and cannot be linked to you.</p>
+    <p>Jabe has no user accounts or profiles. To protect the AI service from abuse, your messages pass through a small relay that Jabe runs on Cloudflare. The relay does not store, log, or read the content of your conversations, and the developer of this app receives none of your content &mdash; not your conversations, not your journal, not your moods. To confirm a request comes from a genuine copy of Jabe, the relay keeps one anonymous record for each installation (Apple App Attest): a randomly generated key ID, that key's public half, and a counter. It contains no name, email, account, or conversation content. This record has no expiry, and deleting the app does not remove it, but it is not tied to you.</p>
 
     <h2>What Stays On Your Device</h2>
     <p>The following is stored locally on your iPhone using Apple's on-device storage, and is never uploaded, backed up to a Jabe server, or shared with anyone:</p>
