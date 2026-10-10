@@ -721,19 +721,35 @@ final class SequenceStubURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var _queue: [Reply] = []
     nonisolated(unsafe) private static var _captured: [URLRequest] = []
+    nonisolated(unsafe) private static var _bodies: [Data] = []
 
     static func queue(_ replies: Reply...) {
         lock.lock(); defer { lock.unlock() }
-        _queue = replies; _captured = []
+        _queue = replies; _captured = []; _bodies = []
     }
     static var captured: [URLRequest] { lock.lock(); defer { lock.unlock() }; return _captured }
+    static var bodies: [Data] { lock.lock(); defer { lock.unlock() }; return _bodies }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        var body = Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let n = stream.read(&buf, maxLength: buf.count)
+                if n <= 0 { break }
+                body.append(buf, count: n)
+            }
+            stream.close()
+        } else if let b = request.httpBody {
+            body = b
+        }
         Self.lock.lock()
         Self._captured.append(request)
+        Self._bodies.append(body)
         let reply = Self._queue.isEmpty ? .http(500, "") : Self._queue.removeFirst()
         Self.lock.unlock()
 
@@ -825,6 +841,23 @@ struct AIServiceErrorPathTests {
         }
     }
 
+    // A long chat used to grow past the Worker's 20,000-character body cap; every later
+    // message in that conversation then 413'd and showed the outage copy. Only the recent
+    // tail is sent now, so the request stays small however long the conversation gets.
+    @Test func longChatRequestStaysUnderTheWorkerCap() async throws {
+        SequenceStubURLProtocol.queue(.http(200, okBody))
+        let long = (0..<200).map { i in
+            ChatMessage(content: String(repeating: "word ", count: 40) + "#\(i)", isUser: i % 2 == 0, mood: nil, timestamp: Date())
+        }
+        _ = try await makeService().send(history: long, mood: .neutral)
+        let body = SequenceStubURLProtocol.bodies.first ?? Data()
+        #expect(body.count < 20_000)
+        let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        let msgs = obj?["messages"] as? [[String: String]] ?? []
+        #expect(msgs.first?["role"] == "system")
+        #expect(msgs.last?["content"]?.hasSuffix("#199") == true, "the newest message is always sent")
+    }
+
     // MARK: Weekly Insight — fails silently to "" so the card can fall back
 
     @Test func insightRetriesOnceAfter401AndReturnsTheText() async {
@@ -847,5 +880,31 @@ struct AIServiceErrorPathTests {
         #expect(await insight(makeService()) == "")
         SequenceStubURLProtocol.queue(.http(200, #"{"unexpected":true}"#))
         #expect(await insight(makeService()) == "")
+    }
+}
+
+struct RecentHistoryTests {
+    private func msg(_ text: String, user: Bool = true) -> ChatMessage {
+        ChatMessage(content: text, isUser: user, mood: nil, timestamp: Date())
+    }
+
+    @Test func shortHistoryIsSentWhole() {
+        let h = [msg("a"), msg("b", user: false), msg("c")]
+        #expect(AIService.recentHistory(h, maxChars: 100).map(\.content) == ["a", "b", "c"])
+    }
+
+    @Test func keepsTheNewestMessagesThatFitInOrder() {
+        let h = [msg("1111"), msg("2222", user: false), msg("3333"), msg("4444", user: false)]
+        #expect(AIService.recentHistory(h, maxChars: 9).map(\.content) == ["3333", "4444"])
+    }
+
+    @Test func alwaysKeepsTheNewestMessageEvenIfItAloneIsOverBudget() {
+        let h = [msg("old"), msg(String(repeating: "x", count: 50))]
+        #expect(AIService.recentHistory(h, maxChars: 10).count == 1)
+        #expect(AIService.recentHistory(h, maxChars: 10).first?.content.count == 50)
+    }
+
+    @Test func emptyHistoryStaysEmpty() {
+        #expect(AIService.recentHistory([], maxChars: 10).isEmpty)
     }
 }

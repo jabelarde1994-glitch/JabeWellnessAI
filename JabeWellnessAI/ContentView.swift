@@ -25,7 +25,7 @@ enum Secrets {
 
     // Simulator-only: the simulator cannot attest, so DEBUG simulator builds present this to the
     // Worker instead. Compiled out of every device build so it cannot ship in the binary.
-    #if targetEnvironment(simulator)
+    #if DEBUG && targetEnvironment(simulator)
     static let devBypassSecret = SecretsStore.devBypassSecret
     #endif
 }
@@ -949,6 +949,27 @@ final class AIService {
         }
     }
 
+    /// How much conversation, in characters, goes to the model with each message (~2K tokens).
+    /// The Worker rejects bodies over 20,000 characters, and before this cap a long chat crossed
+    /// that line and failed on every later message. It also keeps one long chat from spending
+    /// most of the per-minute Groq token allowance every install shares. Saved history is
+    /// unaffected; Jabe just stops seeing the oldest part of a very long conversation.
+    static let historyCharBudget = 8_000
+
+    /// The newest messages whose combined text fits in `maxChars`, oldest first. The newest
+    /// message is always kept, even alone over budget, so the user's latest words are never
+    /// dropped.
+    static func recentHistory(_ history: [ChatMessage], maxChars: Int) -> [ChatMessage] {
+        var kept: [ChatMessage] = []
+        var used = 0
+        for message in history.reversed() {
+            used += message.content.count
+            if used > maxChars && !kept.isEmpty { break }
+            kept.append(message)
+        }
+        return kept.reversed()
+    }
+
     func send(
         history: [ChatMessage],
         mood: MoodType
@@ -960,7 +981,7 @@ final class AIService {
             ["role": "system", "content": systemPrompt]
         ]
 
-        for message in history {
+        for message in Self.recentHistory(history, maxChars: Self.historyCharBudget) {
             messages.append([
                 "role":    message.isUser ? "user" : "assistant",
                 "content": message.content
@@ -1006,11 +1027,11 @@ final class AIService {
     }
 
     /// Sends the request with whatever credential this build can present. On a device that is a
-    /// short-lived App Attest token; the simulator cannot attest, so it presents the dev bypass
-    /// secret instead (that branch, and the secret, do not exist in device builds).
+    /// short-lived App Attest token; the simulator cannot attest, so a Debug simulator build
+    /// presents the dev bypass secret instead (that branch, and the secret, exist in no other build).
     private func authorizedData(for request: URLRequest) async throws -> (Data, URLResponse) {
         var request = request
-        #if targetEnvironment(simulator)
+        #if DEBUG && targetEnvironment(simulator)
         request.setValue(Secrets.devBypassSecret, forHTTPHeaderField: "X-Dev-Bypass")
         #else
         let token = try await Self.attestation.validToken()
