@@ -211,6 +211,33 @@ final class JabeWellnessAIUITests: XCTestCase {
         app.buttons["Close"].firstMatch.tap()
     }
 
+    // The About rows are the only build fingerprint a user can read off an install, so pin them.
+    // The 2026-08-19 attempt failed on LabeledContent's accessibility shape: depending on the
+    // OS, the value surfaces as its own staticText or folded into one element's label/value.
+    // Match either shape rather than one of them.
+    @MainActor
+    func testAboutShowsCurrentAppNameAndModel() throws {
+        let app = XCUIApplication()
+        app.launch()
+        dismissOnboardingIfPresent(app)
+
+        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30), "Tab bar should appear after the splash")
+        app.tabBars.buttons["Settings"].tap()
+
+        func row(_ text: String) -> XCUIElement {
+            app.descendants(matching: .any).matching(
+                NSPredicate(format: "label == %@ OR value == %@ OR label ENDSWITH %@", text, text, ", \(text)")
+            ).firstMatch
+        }
+
+        let model = row("GPT OSS 120B via Groq")
+        for _ in 0..<6 where !model.exists { app.swipeUp() }
+
+        XCTAssertTrue(model.waitForExistence(timeout: 5), "About should name the model.\n\(app.debugDescription)")
+        XCTAssertTrue(row("Jabe Wellness").exists, "About's App row should read the current name.\n\(app.debugDescription)")
+        XCTAssertFalse(row("Jabe Wellness AI").exists, "About still shows the pre-2026-08-23 name")
+    }
+
     @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.

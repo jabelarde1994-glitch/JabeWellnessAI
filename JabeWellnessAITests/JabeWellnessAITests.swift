@@ -707,3 +707,145 @@ struct ReviewPromptGateTests {
         #expect(defaults.object(forKey: "mm_reviewLastAsked") == nil)
     }
 }
+
+// MARK: - AIService error paths
+//
+// Chat and Weekly Insight each retry once on a 401 (the cached token was refused) and map
+// every other failure onto user-facing copy. Until 2026-10-10 none of that was exercised: these
+// stub the Worker through an injected URLSession. Own stub class, so this suite cannot race
+// WorkerTransportTests over StubURLProtocol's shared handler.
+
+final class SequenceStubURLProtocol: URLProtocol, @unchecked Sendable {
+    enum Reply { case http(Int, String), fail(URLError.Code) }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _queue: [Reply] = []
+    nonisolated(unsafe) private static var _captured: [URLRequest] = []
+
+    static func queue(_ replies: Reply...) {
+        lock.lock(); defer { lock.unlock() }
+        _queue = replies; _captured = []
+    }
+    static var captured: [URLRequest] { lock.lock(); defer { lock.unlock() }; return _captured }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self._captured.append(request)
+        let reply = Self._queue.isEmpty ? .http(500, "") : Self._queue.removeFirst()
+        Self.lock.unlock()
+
+        switch reply {
+        case .fail(let code):
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+        case .http(let status, let body):
+            guard let url = request.url,
+                  let resp = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return
+            }
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
+
+@Suite(.serialized)
+struct AIServiceErrorPathTests {
+    private let okBody = #"{"choices":[{"message":{"content":"  You're doing well.  "}}]}"#
+
+    private func makeService() -> AIService {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [SequenceStubURLProtocol.self]
+        return AIService(session: URLSession(configuration: cfg))
+    }
+
+    private func sendChat(_ service: AIService) async throws -> String {
+        let history = [ChatMessage(content: "I feel anxious", isUser: true, mood: .anxious, timestamp: Date())]
+        return try await service.send(history: history, mood: .anxious)
+    }
+
+    private func insight(_ service: AIService) async -> String {
+        await service.generateWeeklyInsight(sessions: [], journal: [])
+    }
+
+    // MARK: Chat
+
+    @Test func chatRetriesOnceAfter401AndReturnsTheReply() async throws {
+        SequenceStubURLProtocol.queue(.http(401, ""), .http(200, okBody))
+        let reply = try await sendChat(makeService())
+        #expect(reply == "You're doing well.")
+        #expect(SequenceStubURLProtocol.captured.count == 2)
+        #expect(SequenceStubURLProtocol.captured.allSatisfy { $0.url?.path == "/chat" })
+    }
+
+    @Test func chatShowsVerificationCopyWhenTheRetryIsAlsoRefused() async throws {
+        SequenceStubURLProtocol.queue(.http(401, ""), .http(401, ""))
+        let reply = try await sendChat(makeService())
+        #expect(reply == AIService.verificationFailedMessage)
+        #expect(SequenceStubURLProtocol.captured.count == 2, "exactly one retry, never a loop")
+    }
+
+    @Test func chatDoesNotRetryARateLimit() async throws {
+        SequenceStubURLProtocol.queue(.http(429, ""))
+        let reply = try await sendChat(makeService())
+        #expect(reply.contains("need a moment to breathe"))
+        #expect(SequenceStubURLProtocol.captured.count == 1)
+    }
+
+    @Test func chatShowsServiceCopyOnAnOutage() async throws {
+        SequenceStubURLProtocol.queue(.http(502, ""))
+        let reply = try await sendChat(makeService())
+        #expect(reply == AIService.serviceUnavailableMessage)
+        #expect(SequenceStubURLProtocol.captured.count == 1)
+    }
+
+    // Offline and a malformed 200 both throw; JournalViewModel maps the error with
+    // userFacingError(for:), so assert the mapping the user actually sees.
+    @Test func chatOfflineThrowsAndMapsToOfflineCopy() async {
+        SequenceStubURLProtocol.queue(.fail(.notConnectedToInternet))
+        do {
+            _ = try await sendChat(makeService())
+            Issue.record("expected a throw")
+        } catch {
+            #expect(AIService.userFacingError(for: error) == AIService.offlineMessage)
+        }
+    }
+
+    @Test func chatMalformed200ThrowsAndMapsToServiceCopy() async {
+        SequenceStubURLProtocol.queue(.http(200, #"{"unexpected":true}"#))
+        do {
+            _ = try await sendChat(makeService())
+            Issue.record("expected a throw")
+        } catch {
+            #expect(AIService.userFacingError(for: error) == AIService.serviceUnavailableMessage)
+        }
+    }
+
+    // MARK: Weekly Insight — fails silently to "" so the card can fall back
+
+    @Test func insightRetriesOnceAfter401AndReturnsTheText() async {
+        SequenceStubURLProtocol.queue(.http(401, ""), .http(200, okBody))
+        #expect(await insight(makeService()) == "You're doing well.")
+        #expect(SequenceStubURLProtocol.captured.count == 2)
+        #expect(SequenceStubURLProtocol.captured.allSatisfy { $0.url?.path == "/insight" })
+    }
+
+    @Test func insightIsEmptyWhenTheRetryIsAlsoRefused() async {
+        SequenceStubURLProtocol.queue(.http(401, ""), .http(401, ""))
+        #expect(await insight(makeService()) == "")
+        #expect(SequenceStubURLProtocol.captured.count == 2)
+    }
+
+    @Test func insightIsEmptyOnOutageOfflineOrMalformedBody() async {
+        SequenceStubURLProtocol.queue(.http(500, ""))
+        #expect(await insight(makeService()) == "")
+        SequenceStubURLProtocol.queue(.fail(.notConnectedToInternet))
+        #expect(await insight(makeService()) == "")
+        SequenceStubURLProtocol.queue(.http(200, #"{"unexpected":true}"#))
+        #expect(await insight(makeService()) == "")
+    }
+}

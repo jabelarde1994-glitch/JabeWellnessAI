@@ -874,6 +874,13 @@ final class AIService {
         transport: WorkerTransport(baseURL: AIService.workerBaseURL)
     )
 
+    /// Injectable so tests can stub the Worker's responses; the app always uses `.shared`.
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
     private let systemPrompt = """
     You are Jabe, a warm and emotionally supportive AI wellness companion.
 
@@ -1009,7 +1016,7 @@ final class AIService {
         let token = try await Self.attestation.validToken()
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         #endif
-        return try await URLSession.shared.data(for: request)
+        return try await session.data(for: request)
     }
 
     // Generates a short weekly emotional summary from recent sessions and journal entries
@@ -2009,7 +2016,7 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("App",       value: "Jabe Wellness AI")
+                    LabeledContent("App",       value: "Jabe Wellness")
                     LabeledContent("Version",   value: appVersion)
                     LabeledContent("Developer", value: "Jabe")
                     LabeledContent("AI Model",  value: AIService.modelDisplayName)
