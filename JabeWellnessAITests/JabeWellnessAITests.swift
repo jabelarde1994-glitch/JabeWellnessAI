@@ -935,6 +935,19 @@ struct SafetyCheckerTests {
         #expect(SafetyChecker().containsRisk(text))
     }
 
+    // Whole-word matching must not lose inflected forms that the old substring search caught
+    // ("self-harming" contains "self-harm"), nor common -ing/-ed forms of the listed phrases.
+    @Test(arguments: [
+        "I've been self-harming again",
+        "I self harmed last night",
+        "I'm thinking about killing myself",
+        "I keep hurting myself",
+        "I wanted to die",
+    ])
+    func flagsInflectedForms(_ text: String) {
+        #expect(SafetyChecker().containsRisk(text))
+    }
+
     // The iPhone keyboard types a curly apostrophe (U+2019) by default, and people often drop the
     // apostrophe entirely; neither may stop an existing phrase from matching.
     @Test(arguments: [
@@ -960,5 +973,166 @@ struct SafetyCheckerTests {
     ])
     func leavesEverydayFiguresOfSpeechAlone(_ text: String) {
         #expect(!SafetyChecker().containsRisk(text))
+    }
+}
+
+// MARK: - EmotionDetector
+
+// The detected mood tags the message, drives the header emoji, and feeds the mood chart and Weekly
+// Insight, so a wrong mood is visible and sticky. Every misfire a user reports goes in here first.
+struct EmotionDetectorTests {
+
+    // Ordinary sentences that used to read as angry or sad because a mood word was only the START of
+    // another word ("made" → mad, "mission" → miss, "crystal" → cry) or a word with a non-mood sense.
+    @Test(arguments: [
+        "I made pancakes for breakfast",
+        "Good morning! I made it to work on time",
+        "I'm done with my homework",
+        "I watched a mission impossible movie",
+        "I bought a crystal vase",
+        "The content of the email was long",
+        "We watched car racing on TV",
+        "I'm embracing thoughts of gratitude today",
+        "No racing thoughts tonight, finally calm",
+    ])
+    func everydaySentencesStayNeutral(_ text: String) {
+        #expect(EmotionDetector().detectEmotion(from: text) == .neutral)
+    }
+
+    // Real mood language, including inflected forms, must still be detected.
+    @Test(arguments: [
+        ("I'm so angry at him", MoodType.angry),
+        ("I hated today", .angry),
+        ("I feel anxious about tomorrow", .anxious),
+        ("I'm panicking about the exam", .anxious),
+        ("my thoughts are racing tonight", .anxious),
+        ("I've been crying all night", .sad),
+        ("there is so much sadness in me", .sad),
+        ("I'm happy today", .happy),
+        ("I feel fearful", .anxious),
+        ("I'm so happy😊", .happy),
+        ("feeling sad😭", .sad),
+        ("I cried all night", .sad),
+    ])
+    func realMoodLanguageIsStillDetected(_ text: String, _ mood: MoodType) {
+        #expect(EmotionDetector().detectEmotion(from: text) == mood)
+    }
+
+    // "I'm happy I made dinner" scored happy 1, angry 1 and the winner was random. A sentence with one
+    // real mood word must get that mood.
+    @Test func aRealMoodWordIsNotOutvotedByAFalseOne() {
+        #expect(EmotionDetector().detectEmotion(from: "I'm happy I made dinner") == .happy)
+    }
+
+    // Ties resolve in list order (happy, sad, anxious, angry), never at random.
+    @Test func tiesResolveInListOrderNotAtRandom() {
+        #expect(EmotionDetector().detectEmotion(from: "I'm sad and angry") == .sad)
+        #expect(EmotionDetector().detectEmotion(from: "I miss my mom but I'm happy today") == .happy)
+    }
+
+    // A word listed both as itself and as keyword + ending ("overthinking", "crying") counts once,
+    // or one anxious word outvotes one happy word.
+    @Test func aWordCountsOnceEvenIfListedTwice() {
+        #expect(EmotionDetector().detectEmotion(from: "I'm overthinking but honestly happy") == .happy)
+    }
+
+    // The iPhone keyboard types "don’t" with a curly apostrophe; the negation must still apply.
+    @Test func curlyApostropheNegationStillNegates() {
+        #expect(EmotionDetector().detectEmotion(from: "I don\u{2019}t feel happy") == .neutral)
+    }
+}
+
+// MARK: - Crisis resources by region
+
+// 988 reaches only the US and Canada. Everyone else must see a line that works where they are, and
+// every message must still tell people outside that country what to do.
+struct CrisisResourcesTests {
+
+    private func response(_ region: String?) -> String {
+        SafetyChecker().crisisResponse(forRegion: region)
+    }
+
+    @Test func unitedStatesGets988AndCrisisTextLine() {
+        #expect(response("US").contains("988"))
+        #expect(response("US").contains("741741"))
+    }
+
+    @Test(arguments: ["PR", "GU", "VI", "AS", "MP"])
+    func usTerritoriesGet988(_ region: String) {
+        #expect(response(region).contains("988"))
+    }
+
+    @Test func canadaGets988ButNotTheUSOnlyTextLine() {
+        #expect(response("CA").contains("988"))
+        #expect(!response("CA").contains("741741"))
+    }
+
+    @Test(arguments: [
+        ("PH", "1553"), ("GB", "116 123"), ("IE", "116 123"), ("AU", "13 11 14"), ("NZ", "1737"),
+        ("IN", "14416"), ("SG", "1767"), ("MY", "15555"), ("ZA", "0800 567 567"),
+    ])
+    func countriesOutside988GetTheirOwnLineAndNot988(_ region: String, _ number: String) {
+        #expect(response(region).contains(number))
+        #expect(!response(region).contains("988"))
+    }
+
+    @Test(arguments: ["FR", "DE", "JP", "BR"])
+    func unlistedCountriesGetTheDirectoryFallbackAndNot988(_ region: String) {
+        #expect(response(region).contains("findahelpline.com"))
+        #expect(response(region).contains("local emergency number"))
+        #expect(!response(region).contains("988"))
+    }
+
+    @Test func noRegionGetsTheFallback() {
+        #expect(response(nil).contains("findahelpline.com"))
+    }
+
+    // The Region setting can be wrong (travel, expats), so every listed country also says what to do elsewhere.
+    @Test(arguments: ["US", "CA", "PH", "GB", "AU"])
+    func everyCountryMessageCarriesTheElsewhereLine(_ region: String) {
+        #expect(response(region).contains("local emergency number"))
+    }
+
+    @Test func onboardingLineFollowsTheRegionToo() {
+        #expect(SafetyChecker.crisisLine(forRegion: "US").contains("988"))
+        #expect(SafetyChecker.crisisLine(forRegion: "PH").contains("1553"))
+        #expect(!SafetyChecker.crisisLine(forRegion: "PH").contains("988"))
+        #expect(SafetyChecker.crisisLine(forRegion: "FR").contains("local emergency number"))
+    }
+}
+
+// MARK: - Crisis messages skip mood detection
+
+// Joel's rule (2026-10-11): a message that triggers the crisis response is not mood-tagged. The
+// detector would read "I am sad today … I am thinking to kill myself" as Sad, put Sad on the header,
+// and count the exchange in the mood chart; a crisis is not a mood data point.
+@MainActor
+struct CrisisMessageMoodTests {
+
+    private let crisisText = "Good day. I am sad today, due to full of problems, I am thinking to kill myself."
+
+    @Test func crisisMessageIsTaggedNeutralEvenWithAMoodWord() async {
+        let vm = JournalViewModel()
+        vm.currentInput = crisisText
+        await vm.send()
+        #expect(vm.messages.first?.isUser == true)
+        #expect(vm.messages.first?.mood == .neutral)
+    }
+
+    @Test func crisisMessageLeavesTheHeaderMoodAsItWas() async {
+        let vm = JournalViewModel()
+        vm.currentMood = .happy
+        vm.currentInput = crisisText
+        await vm.send()
+        #expect(vm.currentMood == .happy)
+    }
+
+    @Test func crisisReplyCarriesNoMood() async {
+        let vm = JournalViewModel()
+        vm.currentInput = crisisText
+        await vm.send()
+        #expect(vm.messages.count == 2)
+        #expect(vm.messages.last?.isUser == false)
+        #expect(vm.messages.last?.mood == nil)
     }
 }

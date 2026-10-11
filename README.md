@@ -29,7 +29,7 @@
 
 ## Features
 
-**Free** — AI chat with full open-ended conversation · mood detection with color-coded bubbles · crisis-language safety checker (988 Lifeline + Crisis Text Line) · chat history · journal · theming
+**Free** — AI chat with full open-ended conversation · mood detection with color-coded bubbles · crisis-language safety checker with the user's own country's crisis line (988 in the US and Canada, NCMH in the Philippines, and others) · chat history · journal · theming
 
 **Premium** — 7-day mood trends chart · streak tracking · AI weekly insights · guided exercises (box breathing, grounding, CBT reframing) · voice input · journal export
 

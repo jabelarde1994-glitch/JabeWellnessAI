@@ -172,16 +172,16 @@ final class SentimentAnalyzer {
 
 final class EmotionDetector {
 
-    private let emotionMap: [(MoodType, [String])] = [
+    private static let emotionMap: [(MoodType, [String])] = [
 
         (.happy, [
             "happy", "excited", "great", "amazing", "joy", "joyful", "love",
             "wonderful", "fantastic", "glad", "thrilled", "elated", "cheerful",
-            "delighted", "blessed", "grateful", "hopeful", "proud", "content"
+            "delighted", "blessed", "grateful", "hopeful", "proud"
         ]),
 
         (.sad, [
-            "sad", "cry", "crying", "lonely", "depressed", "hopeless", "empty",
+            "sad", "cry", "crying", "cried", "cries", "lonely", "depressed", "hopeless", "empty",
             "broken", "miss", "grief", "sorrow", "tears", "miserable",
             "heartbroken", "lost", "tired", "exhausted", "drained", "numb"
         ]),
@@ -189,53 +189,62 @@ final class EmotionDetector {
         (.anxious, [
             "anxious", "worried", "nervous", "scared", "afraid",
             "stressed", "panic", "overwhelmed", "dread", "uneasy", "tense",
-            "restless", "fear", "overthinking", "overthink", "racing"
+            "restless", "fear", "overthinking", "overthink", "panicking", "panicked",
+            "racing thoughts", "thoughts are racing", "mind is racing"
         ]),
 
         (.angry, [
             "angry", "mad", "furious", "frustrated", "rage", "annoyed",
             "irritated", "hate", "livid", "outraged", "bitter", "upset",
-            "resentful", "fed up", "done"
+            "resentful", "fed up"
         ])
     ]
+
+    // A keyword matches a whole word or the word plus a regular ending, so "hated" and "sadness" count
+    // but "made" (mad), "mission" (miss) and "crystal" (cry) don't. Irregular forms are listed above.
+    // Built once: every counted word form per mood, and multi-word phrases as word sequences.
+    private static let endings = ["", "s", "es", "d", "ed", "ing", "ly", "ness", "ful"]
+    private static let matchers: [(mood: MoodType, forms: Set<String>, phrases: [[String]])] =
+        emotionMap.map { mood, keywords in
+            let forms = keywords.filter { !$0.contains(" ") }.flatMap { k in endings.map { k + $0 } }
+            let phrases = keywords.filter { $0.contains(" ") }.map { $0.split(separator: " ").map(String.init) }
+            return (mood, Set(forms), phrases)
+        }
 
     func detectEmotion(from text: String) -> MoodType {
 
         let negations: Set<String> = ["not", "no", "never", "don't", "dont", "without", "isn't", "isnt", "am not"]
-        let lowercase = text.lowercased()
-        let words = lowercase
-            .components(separatedBy: .whitespacesAndNewlines)
-            .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+        // Curly apostrophes (the iPhone default) are straightened so "don’t" still negates, and emoji or
+        // other symbols split words so "happy😊" still reads as "happy".
+        let words = text.lowercased()
+            .replacingOccurrences(of: "[\u{2018}\u{2019}\u{02BC}]", with: "'", options: .regularExpression)
+            .replacingOccurrences(of: "[^\\p{L}\\p{N}'-]+", with: " ", options: .regularExpression)
+            .split(separator: " ")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "'-")) }
             .filter { !$0.isEmpty }
 
-        var scores: [MoodType: Int] = [:]
+        func negated(at i: Int) -> Bool {
+            words[max(0, i - 2) ..< i].contains(where: negations.contains)
+        }
 
-        for (mood, keywords) in emotionMap {
+        // Ties go to the mood listed first (happy, sad, anxious, angry), never to a random one.
+        var best: (mood: MoodType, score: Int) = (.neutral, 0)
+
+        for matcher in Self.matchers {
             var score = 0
-            for keyword in keywords {
-                if keyword.contains(" ") {
-                    if lowercase.contains(keyword) { score += 1 }
-                } else {
-                    for (i, word) in words.enumerated() {
-                        if word == keyword || word.hasPrefix(keyword) {
-                            let window = words[max(0, i - 2) ..< i]
-                            if !window.contains(where: { negations.contains($0) }) {
-                                score += 1
-                            }
-                        }
-                    }
+            for (i, word) in words.enumerated() where matcher.forms.contains(word) && !negated(at: i) {
+                score += 1
+            }
+            for phrase in matcher.phrases where words.count >= phrase.count {
+                for i in 0 ... (words.count - phrase.count)
+                    where Array(words[i ..< i + phrase.count]) == phrase && !negated(at: i) {
+                    score += 1
                 }
             }
-            scores[mood] = score
+            if score > best.score { best = (matcher.mood, score) }
         }
 
-        guard let best = scores.max(by: { $0.value < $1.value }),
-              best.value > 0
-        else {
-            return .neutral
-        }
-
-        return best.key
+        return best.mood
     }
 }
 
@@ -256,7 +265,10 @@ final class SafetyChecker {
         "don't see the point anymore", "better off without me", "better off dead",
         "wish i was dead", "wish i were dead", "wish i wasn't here", "rather be dead",
         "don't want to be here anymore", "nothing to live for", "not worth living",
-        "isn't worth living", "sleep and never wake up", "never wake up again"
+        "isn't worth living", "sleep and never wake up", "never wake up again",
+        "self-harming", "self harming", "self-harmed", "self harmed", "killing myself",
+        "hurting myself", "harming myself", "ending my life", "taking my life",
+        "wanted to die", "wanting to die"
     ].map(normalized)
 
     func containsRisk(_ text: String) -> Bool {
@@ -275,17 +287,84 @@ final class SafetyChecker {
         return " " + words.joined(separator: " ") + " "
     }
 
-    var crisisResponse: String {
-        """
+    // 988 reaches only the US and Canada; every other listed country has its own line. Numbers checked
+    // 2026-10-11 against Find A Helpline and, for the Philippines, DOH's December 2025 / January 2026
+    // announcements. Any other region gets the local-emergency + directory fallback. The region is read
+    // on the device from Settings → Language & Region; nothing is sent anywhere.
+    private struct CrisisLines {
+        let message: String   // the block shown in the chat crisis response
+        let short: String     // the clause shown on the onboarding disclaimer page
+    }
+
+    private static let unitedStates = CrisisLines(
+        message: "📞 988 Suicide & Crisis Lifeline\nCall or text 988 — available 24/7, free & confidential\n\n💬 Crisis Text Line\nText HOME to 741741",
+        short: "call or text 988 (Suicide & Crisis Lifeline) anytime")
+
+    // US territories (PR, GU, VI, AS, MP) are served by 988 too.
+    private static let linesByRegion: [String: CrisisLines] = [
+        "US": unitedStates, "PR": unitedStates, "GU": unitedStates, "VI": unitedStates,
+        "AS": unitedStates, "MP": unitedStates,
+        "CA": CrisisLines(
+            message: "📞 9-8-8 Suicide Crisis Helpline\nCall or text 988 — available 24/7",
+            short: "call or text 988 (Suicide Crisis Helpline) anytime"),
+        "PH": CrisisLines(
+            message: "📞 NCMH Crisis Hotline\nCall 1553, or 0917-899-8727 / 0919-057-1553 — available 24/7",
+            short: "call the NCMH Crisis Hotline at 1553 or 0917-899-8727, 24/7"),
+        "GB": CrisisLines(
+            message: "📞 Samaritans\nCall 116 123 — available 24/7, free",
+            short: "call Samaritans on 116 123, free, 24/7"),
+        "IE": CrisisLines(
+            message: "📞 Samaritans\nCall 116 123 — available 24/7, free\n\n💬 Text About It\nText 50808 — available 24/7, free",
+            short: "call Samaritans on 116 123 or text 50808, 24/7"),
+        "AU": CrisisLines(
+            message: "📞 Lifeline\nCall 13 11 14 — available 24/7, or text 0477 13 11 14",
+            short: "call Lifeline on 13 11 14, 24/7"),
+        "NZ": CrisisLines(
+            message: "📞 Need to talk?\nCall or text 1737 — free, any time",
+            short: "call or text 1737, free, any time"),
+        "IN": CrisisLines(
+            message: "📞 Tele-MANAS\nCall 14416 — available 24/7, free",
+            short: "call Tele-MANAS on 14416, free, 24/7"),
+        "SG": CrisisLines(
+            message: "📞 Samaritans of Singapore\nCall 1767 — available 24/7",
+            short: "call Samaritans of Singapore on 1767, 24/7"),
+        "MY": CrisisLines(
+            message: "📞 Talian HEAL\nCall 15555\n\n📞 Befrienders Kuala Lumpur\nCall 03-7627 2929",
+            short: "call Talian HEAL on 15555 or Befrienders on 03-7627 2929"),
+        "ZA": CrisisLines(
+            message: "📞 SADAG Suicide Crisis Line\nCall 0800 567 567 — free\n\n📞 Lifeline South Africa\nCall 0861 322 322 — available 24/7",
+            short: "call the SADAG Suicide Crisis Line on 0800 567 567"),
+    ]
+
+    private static let fallback = CrisisLines(
+        message: "📞 Call your local emergency number, or find a free crisis line for your country at findahelpline.com",
+        short: "call your local emergency number, or find a free crisis line at findahelpline.com")
+
+    // The Region setting can be wrong (travel, expats), so a listed country's message also says what to do elsewhere.
+    private static let elsewhere = "If you're somewhere else, call your local emergency number."
+
+    static var currentRegion: String? { Locale.current.region?.identifier }
+
+    static func crisisLine(forRegion region: String?) -> String {
+        "If you're in crisis, \((listedLines(forRegion: region) ?? fallback).short)."
+    }
+
+    private static func listedLines(forRegion region: String?) -> CrisisLines? {
+        region.flatMap { linesByRegion[$0.uppercased()] }
+    }
+
+    var crisisResponse: String { crisisResponse(forRegion: Self.currentRegion) }
+
+    func crisisResponse(forRegion region: String?) -> String {
+        let listed = Self.listedLines(forRegion: region)
+        let resources = (listed ?? Self.fallback).message
+        let elsewhere = listed == nil ? "" : "\n\n" + Self.elsewhere
+        return """
         You are not alone, and what you're feeling matters deeply. 💙
 
         Please reach out for support right now:
 
-        📞 988 Suicide & Crisis Lifeline
-        Call or text 988 — available 24/7, free & confidential
-
-        💬 Crisis Text Line
-        Text HOME to 741741
+        \(resources)\(elsewhere)
 
         You deserve care and support. I'm here with you.
         """
@@ -1128,17 +1207,21 @@ final class JournalViewModel: ObservableObject {
         let text = currentInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
 
-        let mood = emotionDetector.detectEmotion(from: text)
-        if mood != .neutral { currentMood = mood }
         currentInput = ""
 
-        append(ChatMessage(content: text, isUser: true, mood: currentMood, timestamp: Date()))
-
+        // A crisis message skips mood detection: it is tagged Neutral, leaves the header mood alone,
+        // and the reply carries no mood, so the exchange never counts as a mood in history or Insights.
         if safetyChecker.containsRisk(text) {
-            append(ChatMessage(content: safetyChecker.crisisResponse, isUser: false, mood: .sad, timestamp: Date()))
+            append(ChatMessage(content: text, isUser: true, mood: .neutral, timestamp: Date()))
+            append(ChatMessage(content: safetyChecker.crisisResponse, isUser: false, mood: nil, timestamp: Date()))
             haptic(.warning)
             return
         }
+
+        let mood = emotionDetector.detectEmotion(from: text)
+        if mood != .neutral { currentMood = mood }
+
+        append(ChatMessage(content: text, isUser: true, mood: currentMood, timestamp: Date()))
 
         isLoading = true
         defer { isLoading = false }
@@ -1882,7 +1965,7 @@ struct OnboardingView: View {
                  subtitle: "Reflect on your day and save mood-linked entries to see your emotional journey.",
                  icon: "book.fill", color: Color(red: 0.12, green: 0.60, blue: 0.35)),
         PageData(title: "A Companion,\nNot a Clinician",
-                 subtitle: "Jabe is an AI wellness companion, not a licensed therapist or medical provider. If you're in crisis, call or text 988 (Suicide & Crisis Lifeline) anytime.",
+                 subtitle: "Jabe is an AI wellness companion, not a licensed therapist or medical provider. " + SafetyChecker.crisisLine(forRegion: SafetyChecker.currentRegion),
                  icon: "heart.text.square.fill", color: Color(red: 0.75, green: 0.30, blue: 0.35))
     ]
 
