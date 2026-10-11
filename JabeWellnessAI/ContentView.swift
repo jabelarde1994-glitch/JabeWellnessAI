@@ -245,15 +245,34 @@ final class EmotionDetector {
 
 final class SafetyChecker {
 
-    private let riskyKeywords = [
-        "suicide", "kill myself", "self harm", "self-harm",
+    // Kept specific on purpose: a match replaces the AI reply with the crisis response, so a phrase
+    // that also covers everyday venting ("this is killing me") would cut those conversations off.
+    private static let riskyKeywords = [
+        "suicide", "suicidal", "kill myself", "self harm", "self-harm",
         "end my life", "want to die", "don't want to live",
         "hurt myself", "take my life", "no reason to live",
-        "can't go on", "ending it", "end it all"
-    ]
+        "can't go on", "ending it", "end it all",
+        "unalive", "cutting myself", "took an overdose", "take an overdose",
+        "don't see the point anymore", "better off without me", "better off dead",
+        "wish i was dead", "wish i were dead", "wish i wasn't here", "rather be dead",
+        "don't want to be here anymore", "nothing to live for", "not worth living",
+        "isn't worth living", "sleep and never wake up", "never wake up again"
+    ].map(normalized)
 
     func containsRisk(_ text: String) -> Bool {
-        riskyKeywords.contains { text.localizedCaseInsensitiveContains($0) }
+        let text = Self.normalized(text)
+        return Self.riskyKeywords.contains { text.contains($0) }
+    }
+
+    // Lowercases, drops apostrophes of any style (the iPhone keyboard types a curly ’ by default,
+    // and many people type none), turns other punctuation and whitespace runs into single spaces,
+    // and pads both ends, so phrases match whole words only ("ending it" no longer hits "spending it").
+    private static func normalized(_ text: String) -> String {
+        let words = text.lowercased()
+            .replacingOccurrences(of: "['\u{2018}\u{2019}\u{02BC}]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "[^\\p{L}\\p{N}-]+", with: " ", options: .regularExpression)
+            .split(separator: " ")
+        return " " + words.joined(separator: " ") + " "
     }
 
     var crisisResponse: String {

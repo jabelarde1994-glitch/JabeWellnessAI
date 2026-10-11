@@ -908,3 +908,57 @@ struct RecentHistoryTests {
         #expect(AIService.recentHistory([], maxChars: 10).isEmpty)
     }
 }
+
+// MARK: - SafetyChecker
+
+// A match replaces the AI reply with the 988 / Crisis Text Line response, so the list has two jobs:
+// catch indirect and differently-typed crisis language, and leave everyday venting to the AI.
+struct SafetyCheckerTests {
+
+    // Indirect ideation that the original 13 phrases let through to the model.
+    @Test(arguments: [
+        "I don't see the point anymore",
+        "everyone would be better off without me",
+        "I wish I was dead",
+        "honestly I wish I wasn't here",
+        "I don't want to be here anymore",
+        "I have nothing to live for",
+        "life isn't worth living",
+        "I'd rather be dead",
+        "I want to go to sleep and never wake up",
+        "I've been feeling suicidal",
+        "I keep cutting myself",
+        "I want to unalive myself",
+        "I took an overdose",
+    ])
+    func flagsIndirectCrisisLanguage(_ text: String) {
+        #expect(SafetyChecker().containsRisk(text))
+    }
+
+    // The iPhone keyboard types a curly apostrophe (U+2019) by default, and people often drop the
+    // apostrophe entirely; neither may stop an existing phrase from matching.
+    @Test(arguments: [
+        "I don\u{2019}t want to live",
+        "i dont want to live anymore",
+        "I can\u{2019}t go on like this",
+        "I  WANT   TO DIE",
+    ])
+    func matchesRegardlessOfApostropheStyleCaseOrSpacing(_ text: String) {
+        #expect(SafetyChecker().containsRisk(text))
+    }
+
+    // Everyday figures of speech must still reach the AI rather than get the crisis response.
+    @Test(arguments: [
+        "I'm dying to see the new movie",
+        "this traffic is killing me",
+        "there's no point arguing with my boss",
+        "I'm better off without caffeine",
+        "I want to sleep early tonight",
+        "I had a really rough day at work",
+        "I never wake up on time",
+        "we're spending it with family this weekend",
+    ])
+    func leavesEverydayFiguresOfSpeechAlone(_ text: String) {
+        #expect(!SafetyChecker().containsRisk(text))
+    }
+}
