@@ -2104,7 +2104,7 @@ struct SettingsView: View {
                             HStack {
                                 Label("Unlock Premium", systemImage: "star.fill").foregroundColor(Color(red: 0.52, green: 0.22, blue: 0.88))
                                 Spacer()
-                                Text("$3.99").font(.caption).foregroundColor(.secondary)
+                                Text(premium.product?.displayPrice ?? "$3.99").font(.caption).foregroundColor(.secondary)
                             }
                         }
                     }
