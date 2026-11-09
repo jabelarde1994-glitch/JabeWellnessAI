@@ -59,11 +59,11 @@ Create the gitignored secrets file — a fresh clone will **not** build without 
 ```swift
 // JabeWellnessAI/SecretsStore.swift
 enum SecretsStore {
-    static let groqAPIKey = "gsk_YOUR_KEY_HERE"
+    static let devBypassSecret = ""
 }
 ```
 
-Get a free key at [console.groq.com/keys](https://console.groq.com/keys), then open `JabeWellnessAI.xcodeproj` and run with ⌘R.
+The app holds no AI provider key: chat goes through the project's own relay, which accepts only genuine copies of the app on a real iPhone (Apple App Attest). The simulator can't attest, so DEBUG simulator builds send this secret instead. It is compiled out of every device build and is not public. With it left empty, the app builds and runs but chat replies won't arrive. Open `JabeWellnessAI.xcodeproj` and run with ⌘R.
 
 To exercise in-app purchases, set the scheme's StoreKit configuration in Xcode — **Product → Scheme → Edit Scheme → Run → Options → StoreKit Configuration → `Storekit.storekit`**. Set it through the UI; the relative path in `.xcscheme` isn't safe to hand-edit.
 
