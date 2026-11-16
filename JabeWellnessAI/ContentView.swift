@@ -2553,6 +2553,27 @@ nonisolated enum BreathingCueScript {
     }
 }
 
+/// At full size the circle is drawn 1.5x its frame, so it spills a quarter of its size past the
+/// frame on each side (55 pt for 220 pt). scaleEffect takes up no layout space, so that room is
+/// reserved above and below; without it the full-size circle covered the "Box Breathing" heading
+/// (pre-existing on main). On short screens (iPhone SE) the circle shrinks so the rest still fits.
+nonisolated enum BreathingLayout {
+    static let preferredCircleSize: CGFloat = 220
+    static let minimumCircleSize: CGFloat   = 120
+    static let maxScale: CGFloat            = BreathingPhase.allCases.map(\.targetScale).max() ?? 1
+    /// Everything in the column except the circle: heading, two description lines, "Cycle n of 4",
+    /// the voice switch, and the four 40 pt gaps, with a little to spare.
+    static let otherContentHeight: CGFloat  = 290
+
+    static func overflow(for size: CGFloat) -> CGFloat { size * (maxScale - 1) / 2 }
+
+    /// The largest circle (up to 220 pt) whose full-size drawing fits beside the other content.
+    static func circleSize(forHeight height: CGFloat) -> CGFloat {
+        let fitting = ((height - otherContentHeight) / maxScale).rounded(.down)
+        return min(preferredCircleSize, max(minimumCircleSize, fitting))
+    }
+}
+
 /// Speaks the breathing cues on the device (AVSpeechSynthesizer; no network, no text leaves the
 /// phone). Owns the audio session only while guiding, and never touches it while the chat
 /// microphone is recording.
@@ -2664,49 +2685,56 @@ struct BreathingExerciseView: View {
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 40) {
-                Spacer()
+            GeometryReader { geo in
+                // 220 pt on most iPhones; smaller on short screens so the full-size circle fits.
+                let circleSize = BreathingLayout.circleSize(forHeight: geo.size.height)
+                VStack(spacing: 40) {
+                    Spacer()
 
-                ZStack {
-                    Circle()
-                        .fill(LinearGradient(
-                            colors: [.teal.opacity(0.25), .blue.opacity(0.25)],
-                            startPoint: .top, endPoint: .bottom
-                        ))
-                        .frame(width: 220, height: 220)
-                        .scaleEffect(scale)
-                    Circle()
-                        .stroke(Color.teal.opacity(0.5), lineWidth: 2)
-                        .frame(width: 220, height: 220)
-                        .scaleEffect(scale)
-                    Text(phase)
-                        .font(.title2).fontWeight(.semibold)
-                        .multilineTextAlignment(.center)
-                }
-                .onTapGesture { if !isRunning { startCycles() } }
-
-                VStack(spacing: 8) {
-                    Text("Box Breathing").font(.headline)
-                    Text("Inhale 4s · Hold 4s · Exhale 4s · Hold 4s\nRepeat 4 cycles for best results")
-                        .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                    if cycleCount > 0 {
-                        Text("Cycle \(min(cycleCount, 4)) of 4").font(.subheadline).foregroundColor(.teal)
+                    ZStack {
+                        Circle()
+                            .fill(LinearGradient(
+                                colors: [.teal.opacity(0.25), .blue.opacity(0.25)],
+                                startPoint: .top, endPoint: .bottom
+                            ))
+                            .frame(width: circleSize, height: circleSize)
+                            .scaleEffect(scale)
+                        Circle()
+                            .stroke(Color.teal.opacity(0.5), lineWidth: 2)
+                            .frame(width: circleSize, height: circleSize)
+                            .scaleEffect(scale)
+                        Text(phase)
+                            .font(.title2).fontWeight(.semibold)
+                            .multilineTextAlignment(.center)
                     }
-                }
+                    .onTapGesture { if !isRunning { startCycles() } }
+                    .padding(.vertical, BreathingLayout.overflow(for: circleSize))   // room for the full-size circle
 
-                Toggle(isOn: $voiceEnabled) {
-                    Label("Voice guide", systemImage: voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                        .font(.subheadline)
-                }
-                .tint(.teal)
-                .frame(maxWidth: 240)
-                .accessibilityIdentifier("breathingVoiceToggle")
-                .onChange(of: voiceEnabled) { _, on in
-                    guard isRunning else { return }
-                    if on { guide.prepare() } else { guide.stop() }
-                }
+                    VStack(spacing: 8) {
+                        Text("Box Breathing").font(.headline)
+                        Text("Inhale 4s · Hold 4s · Exhale 4s · Hold 4s\nRepeat 4 cycles for best results")
+                            .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)   // never cut to one line
+                        if cycleCount > 0 {
+                            Text("Cycle \(min(cycleCount, 4)) of 4").font(.subheadline).foregroundColor(.teal)
+                        }
+                    }
 
-                Spacer()
+                    Toggle(isOn: $voiceEnabled) {
+                        Label("Voice guide", systemImage: voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                            .font(.subheadline)
+                    }
+                    .tint(.teal)
+                    .frame(maxWidth: 240)
+                    .accessibilityIdentifier("breathingVoiceToggle")
+                    .onChange(of: voiceEnabled) { _, on in
+                        guard isRunning else { return }
+                        if on { guide.prepare() } else { guide.stop() }
+                    }
+
+                    Spacer()
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
             }
             .padding(24)
             .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.7), trigger: phaseStep)

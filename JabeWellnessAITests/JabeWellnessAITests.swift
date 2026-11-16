@@ -1204,3 +1204,30 @@ struct BreathingCueScriptTests {
         #expect(BreathingCueScript.pauseAfterGreeting == 0.75)
     }
 }
+
+// At full size (scale 1.5) the circle spills a quarter of its size past its frame on each side; the
+// layout must reserve that room or the circle covers the "Box Breathing" heading. On short screens
+// (iPhone SE) the circle shrinks so the heading, both description lines and the voice switch fit.
+struct BreathingLayoutTests {
+
+    @Test func reservesRoomForTheFullSizeCircle() {
+        #expect(BreathingLayout.maxScale == 1.5)
+        #expect(BreathingLayout.overflow(for: 220) == 55)
+    }
+
+    @Test func tallScreensKeepTheOriginal220ptCircle() {
+        #expect(BreathingLayout.circleSize(forHeight: 760) == 220)   // iPhone 17 Pro Max sheet
+        #expect(BreathingLayout.circleSize(forHeight: 2000) == 220)
+    }
+
+    @Test func shortScreensShrinkTheCircleSoEverythingFits() {
+        let seHeight: CGFloat = 529                                   // iPhone SE sheet, inside padding
+        let size = BreathingLayout.circleSize(forHeight: seHeight)
+        #expect(size < 220)
+        #expect(size * BreathingLayout.maxScale + BreathingLayout.otherContentHeight <= seHeight)
+    }
+
+    @Test func circleNeverCollapses() {
+        #expect(BreathingLayout.circleSize(forHeight: 100) == BreathingLayout.minimumCircleSize)
+    }
+}
