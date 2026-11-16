@@ -2065,6 +2065,7 @@ struct SettingsView: View {
     @ObservedObject private var premium   = PremiumManager.shared
     @AppStorage("colorSchemePreference") private var colorSchemePreference = "system"
     @AppStorage("reminderEnabled")       private var reminderEnabled       = false
+    @AppStorage(BreathingCueScript.nameKey) private var userName           = ""
     @State private var reminderTime      = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
     @State private var showClearConfirm  = false
 
@@ -2108,6 +2109,20 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+
+                // Optional; on-device only (UserDefaults). Never sent to the AI or anywhere else.
+                Section {
+                    TextField("Your first name (optional)", text: $userName)
+                        .textContentType(.givenName)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .accessibilityIdentifier("settingsName")
+                } header: {
+                    Text("Name")
+                } footer: {
+                    Text("Used only to greet you in Box Breathing. Stays on this iPhone.")
                 }
 
                 Section("Appearance") {
@@ -2492,69 +2507,49 @@ nonisolated enum BreathingPhase: CaseIterable {
 
     var spokenCue: String {
         switch self {
-        case .inhale:                            return "Breathe in"
-        case .holdAfterInhale, .holdAfterExhale: return "Hold"
-        case .exhale:                            return "Breathe out"
+        case .inhale:                            return "Breathe in."
+        case .holdAfterInhale, .holdAfterExhale: return "Hold."
+        case .exhale:                            return "Breathe out."
         }
     }
 }
 
-/// What the voice says. One short utterance per second (the cue, then "two", "three", "four"), so
-/// each one finishes before the next tick and speech cannot drift behind the animation.
+/// What the voice says and how. One short utterance per second (the cue, then "Two.", "Three.",
+/// "Four."), so each one finishes before the next tick and speech cannot drift behind the circle.
+/// Every cue ends in a full stop so the system voice drops its pitch and pauses, the way a person
+/// counting slowly would, instead of running the words together like a reader.
 nonisolated enum BreathingCueScript {
     static let secondsPerPhase = 4
-    static let closing = "Well done. Take a moment to notice how you feel."
+    static let closing = "Well done. Take a moment, and notice how you feel."
+
+    /// UserDefaults key for the optional name typed in Settings (on-device only).
+    static let nameKey = "userName"
+
+    // The plain system en-US voice (Joel, 2026-11-16: no Enhanced/Premium picking), a little slower
+    // than the 0.5 default, and pitch left at 1.0: a lowered pitch is what made it sound synthetic.
+    static let voiceLanguage = "en-US"
+    static let voiceRate:  Float = 0.44
+    static let voicePitch: Float = 1.0
+
+    /// "Get ready" lasts at least this long; a longer greeting (a long name) extends it.
+    static let minimumLeadIn: Double      = 3
+    static let pauseAfterGreeting: Double = 0.75
+    /// Safety net in case the speech engine never reports the greeting finished.
+    static let maximumLeadIn: Double      = 10
 
     static func cues(for phase: BreathingPhase) -> [String] {
-        [phase.spokenCue, "two", "three", "four"]
+        [phase.spokenCue, "Two.", "Three.", "Four."]
     }
 
-    /// The app stores no name today, so callers pass nil and get the neutral line.
+    /// "Hi Alexandria, let's take a deep breath." with a name; the neutral line without one.
     static func greeting(name: String?) -> String {
-        let base    = "Let's take a deep breath."
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? base : "Hi \(trimmed). \(base)"
+        return trimmed.isEmpty ? "Let's take a deep breath." : "Hi \(trimmed), let's take a deep breath."
     }
-}
 
-/// A plain copy of the voice fields the picker needs, so the choice can be unit-tested without
-/// depending on which voices a given device or simulator has installed.
-nonisolated struct BreathingVoiceCandidate {
-    let identifier: String
-    let name:       String
-    let language:   String
-    let quality:    AVSpeechSynthesisVoiceQuality
-    let isNovelty:  Bool
-    let isPersonal: Bool
-}
-
-nonisolated extension BreathingVoiceCandidate {
-    init(voice: AVSpeechSynthesisVoice) {
-        self.init(identifier: voice.identifier, name: voice.name, language: voice.language,
-                  quality: voice.quality,
-                  isNovelty:  voice.voiceTraits.contains(.isNoveltyVoice),
-                  isPersonal: voice.voiceTraits.contains(.isPersonalVoice))
-    }
-}
-
-nonisolated enum BreathingVoicePicker {
-    /// Voices that sound soft and unhurried; used only to break a tie at the same quality.
-    static let calmNames = ["Ava", "Zoe", "Samantha", "Allison", "Susan"]
-
-    /// The highest-quality en-US voice above default, skipping novelty voices ("Bubbles", "Zarvox")
-    /// and the user's own Personal Voice. nil means "use the system default en-US voice".
-    static func pick(from candidates: [BreathingVoiceCandidate], language: String = "en-US") -> BreathingVoiceCandidate? {
-        func calmRank(_ c: BreathingVoiceCandidate) -> Int {
-            let base = c.name.components(separatedBy: " (").first ?? c.name   // "Ava (Premium)" → "Ava"
-            return calmNames.firstIndex(of: base) ?? calmNames.count
-        }
-        return candidates
-            .filter { $0.language == language && !$0.isNovelty && !$0.isPersonal && $0.quality != .default }
-            .min { a, b in
-                if a.quality != b.quality { return a.quality.rawValue > b.quality.rawValue }
-                if calmRank(a) != calmRank(b) { return calmRank(a) < calmRank(b) }
-                return a.name < b.name
-            }
+    /// Seconds to wait, once the greeting has finished, before the first "Breathe in."
+    static func delayBeforeFirstInhale(greetingEndedAfter elapsed: Double) -> Double {
+        max(minimumLeadIn - elapsed, pauseAfterGreeting)
     }
 }
 
@@ -2563,23 +2558,13 @@ nonisolated enum BreathingVoicePicker {
 /// microphone is recording.
 final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
-    // Slower and a touch lower than the defaults (0.5 rate, 1.0 pitch) for a calm tone.
-    static let rate:  Float = 0.42
-    static let pitch: Float = 0.95
-
     // var, not let: keeps it main-actor isolated (AVSpeechSynthesizer is not Sendable).
     private var synthesizer = AVSpeechSynthesizer()
-    private lazy var voice: AVSpeechSynthesisVoice? = {
-        let installed = AVSpeechSynthesisVoice.speechVoices().map(BreathingVoiceCandidate.init(voice:))
-        if let best = BreathingVoicePicker.pick(from: installed),
-           let chosen = AVSpeechSynthesisVoice(identifier: best.identifier) {
-            return chosen
-        }
-        return AVSpeechSynthesisVoice(language: "en-US")
-    }()
+    private var voice = AVSpeechSynthesisVoice(language: BreathingCueScript.voiceLanguage)
     private var ownsAudioSession = false
     private var releaseWhenIdle  = false
     private var pending          = 0
+    private var completions: [ObjectIdentifier: () -> Void] = [:]
 
     override init() {
         super.init()
@@ -2604,11 +2589,13 @@ final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizer
         #endif
     }
 
-    func speak(_ text: String) {
+    /// `completion` runs once the line has finished, or straight away if speech is stopped.
+    func speak(_ text: String, completion: (() -> Void)? = nil) {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice           = voice
-        utterance.rate            = Self.rate
-        utterance.pitchMultiplier = Self.pitch
+        utterance.rate            = BreathingCueScript.voiceRate
+        utterance.pitchMultiplier = BreathingCueScript.voicePitch
+        if let completion { completions[ObjectIdentifier(utterance)] = completion }
         pending += 1
         synthesizer.speak(utterance)
     }
@@ -2624,6 +2611,10 @@ final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizer
         synthesizer.stopSpeaking(at: .immediate)
         pending = 0
         releaseAudioSession()
+        // Queued lines are dropped without a callback; run their completions so nothing waits forever.
+        let waiting = completions.values
+        completions.removeAll()
+        waiting.forEach { $0() }
     }
 
     private func releaseAudioSession() {
@@ -2635,17 +2626,20 @@ final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizer
         #endif
     }
 
-    private func utteranceEnded() {
+    private func utteranceEnded(_ id: ObjectIdentifier) {
         pending = max(0, pending - 1)
+        completions.removeValue(forKey: id)?()
         if releaseWhenIdle && pending == 0 { releaseAudioSession() }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.utteranceEnded() }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.utteranceEnded(id) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor [weak self] in self?.utteranceEnded() }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor [weak self] in self?.utteranceEnded(id) }
     }
 }
 
@@ -2656,10 +2650,8 @@ struct BreathingExerciseView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.requestReview) private var requestReview
 
-    // Seconds of "Get ready" while the greeting is spoken, before the first inhale.
-    private static let voiceLeadIn: Double = 3
-
     @AppStorage("breathingVoiceEnabled") private var voiceEnabled = true
+    @AppStorage(BreathingCueScript.nameKey) private var userName = ""
     @StateObject private var guide = BreathingVoiceGuide()
 
     @State private var phase      = "Tap to Begin"
@@ -2668,6 +2660,7 @@ struct BreathingExerciseView: View {
     @State private var isActive   = true
     @State private var cycleCount = 0
     @State private var phaseStep  = 0   // bumps on every phase change; drives the haptic pulse
+    @State private var waitingForGreeting = false
 
     var body: some View {
         NavigationView {
@@ -2732,15 +2725,25 @@ struct BreathingExerciseView: View {
         isRunning  = true
         cycleCount = 0
         guard voiceEnabled else { runPhases(remaining: 4); return }
-        // Voice on: a short "Get ready" while the greeting plays, then the first inhale.
-        // No name is stored in the app, so the greeting is the neutral line.
+        // Voice on: "Get ready" while the greeting plays, then the first inhale. The wait follows
+        // the greeting itself, so a long name never runs into "Breathe in."
         guide.prepare()
         phase = "Get ready"
-        guide.speak(BreathingCueScript.greeting(name: nil))
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.voiceLeadIn) {
-            guard isActive else { return }
-            runPhases(remaining: 4)
+        waitingForGreeting = true
+        let started = Date()
+        guide.speak(BreathingCueScript.greeting(name: userName)) {
+            let elapsed = Date().timeIntervalSince(started)
+            let wait = BreathingCueScript.delayBeforeFirstInhale(greetingEndedAfter: elapsed)
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { beginAfterGreeting() }
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + BreathingCueScript.maximumLeadIn) { beginAfterGreeting() }
+    }
+
+    /// Called by whichever comes first: the greeting finishing, or the safety-net timer.
+    private func beginAfterGreeting() {
+        guard isActive, waitingForGreeting else { return }
+        waitingForGreeting = false
+        runPhases(remaining: 4)
     }
 
     private func runPhases(remaining: Int) {

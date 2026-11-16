@@ -1142,7 +1142,7 @@ struct CrisisMessageMoodTests {
 
 // The spoken cues must line up with the circle on screen: one phase per 4 seconds, in the order
 // inhale, hold, exhale, hold, with one short utterance per second so speech can never drift
-// behind the animation. The app stores no user name, so the greeting falls back to a neutral line.
+// behind the animation. Cues are punctuated so the system voice pauses naturally between them.
 struct BreathingCueScriptTests {
 
     @Test func phasesRunInBoxBreathingOrder() {
@@ -1154,11 +1154,11 @@ struct BreathingCueScriptTests {
         #expect(BreathingPhase.allCases.map(\.targetScale) == [1.5, 1.5, 1.0, 1.0])
     }
 
-    @Test func eachPhaseSpeaksItsCueThenCountsToFour() {
-        #expect(BreathingCueScript.cues(for: .inhale)          == ["Breathe in", "two", "three", "four"])
-        #expect(BreathingCueScript.cues(for: .holdAfterInhale) == ["Hold", "two", "three", "four"])
-        #expect(BreathingCueScript.cues(for: .exhale)          == ["Breathe out", "two", "three", "four"])
-        #expect(BreathingCueScript.cues(for: .holdAfterExhale) == ["Hold", "two", "three", "four"])
+    @Test func eachPhaseSpeaksItsCueThenCountsToFourWithPauses() {
+        #expect(BreathingCueScript.cues(for: .inhale)          == ["Breathe in.", "Two.", "Three.", "Four."])
+        #expect(BreathingCueScript.cues(for: .holdAfterInhale) == ["Hold.", "Two.", "Three.", "Four."])
+        #expect(BreathingCueScript.cues(for: .exhale)          == ["Breathe out.", "Two.", "Three.", "Four."])
+        #expect(BreathingCueScript.cues(for: .holdAfterExhale) == ["Hold.", "Two.", "Three.", "Four."])
     }
 
     @Test func oneCuePerSecondOfEveryPhase() {
@@ -1174,54 +1174,33 @@ struct BreathingCueScriptTests {
         #expect(BreathingCueScript.greeting(name: "   ") == "Let's take a deep breath.")
     }
 
-    @Test func greetingUsesANameWhenOneIsGiven() {
-        #expect(BreathingCueScript.greeting(name: "Sam") == "Hi Sam. Let's take a deep breath.")
-        #expect(BreathingCueScript.greeting(name: "  Sam ") == "Hi Sam. Let's take a deep breath.")
+    @Test func greetingUsesTheNameFromSettings() {
+        #expect(BreathingCueScript.greeting(name: "Alexandria") == "Hi Alexandria, let's take a deep breath.")
+        #expect(BreathingCueScript.greeting(name: "  Alexandria \n") == "Hi Alexandria, let's take a deep breath.")
+    }
+
+    // Renaming this key would silently drop every user's saved name.
+    @Test func nameIsStoredUnderAStableKey() {
+        #expect(BreathingCueScript.nameKey == "userName")
     }
 
     @Test func closingLineIsCalm() {
-        #expect(BreathingCueScript.closing == "Well done. Take a moment to notice how you feel.")
-    }
-}
-
-// Voice choice: the best installed en-US voice, never a novelty voice ("Bubbles", "Zarvox") or the
-// user's own Personal Voice. nil means "use the system default en-US voice".
-struct BreathingVoicePickerTests {
-
-    private func voice(_ name: String, _ quality: AVSpeechSynthesisVoiceQuality,
-                       language: String = "en-US", novelty: Bool = false, personal: Bool = false) -> BreathingVoiceCandidate {
-        BreathingVoiceCandidate(identifier: "id.\(name)", name: name, language: language,
-                                quality: quality, isNovelty: novelty, isPersonal: personal)
+        #expect(BreathingCueScript.closing == "Well done. Take a moment, and notice how you feel.")
     }
 
-    @Test func prefersPremiumOverEnhanced() {
-        let pick = BreathingVoicePicker.pick(from: [voice("Evan", .enhanced), voice("Zoe", .premium)])
-        #expect(pick?.name == "Zoe")
+    // Joel's call (2026-11-16): the plain system voice, a little slower, no pitch change.
+    @Test func voiceIsSlightlySlowerWithNoPitchChange() {
+        #expect(BreathingCueScript.voiceRate < AVSpeechUtteranceDefaultSpeechRate)
+        #expect(BreathingCueScript.voiceRate >= 0.38)
+        #expect(BreathingCueScript.voicePitch == 1.0)
+        #expect(BreathingCueScript.voiceLanguage == "en-US")
     }
 
-    @Test func ignoresOtherLanguages() {
-        let pick = BreathingVoicePicker.pick(from: [voice("Kate", .premium, language: "en-GB"), voice("Evan", .enhanced)])
-        #expect(pick?.name == "Evan")
-    }
-
-    @Test func ignoresNoveltyAndPersonalVoices() {
-        let pick = BreathingVoicePicker.pick(from: [
-            voice("Bubbles", .premium, novelty: true),
-            voice("Me", .premium, personal: true),
-            voice("Evan", .enhanced),
-        ])
-        #expect(pick?.name == "Evan")
-    }
-
-    @Test func returnsNilWhenOnlyDefaultQualityIsInstalled() {
-        #expect(BreathingVoicePicker.pick(from: [voice("Samantha", .default), voice("Fred", .default)]) == nil)
-        #expect(BreathingVoicePicker.pick(from: []) == nil)
-    }
-
-    @Test func breaksTiesWithTheCalmVoiceListThenByName() {
-        let calm = BreathingVoicePicker.pick(from: [voice("Nathan", .enhanced), voice("Ava", .enhanced)])
-        #expect(calm?.name == "Ava")
-        let alpha = BreathingVoicePicker.pick(from: [voice("Tom", .enhanced), voice("Reed", .enhanced)])
-        #expect(alpha?.name == "Reed")
+    // A long name must not run into "Breathe in": wait for the greeting to end plus a short pause,
+    // but never start sooner than the 3-second "Get ready".
+    @Test func firstInhaleWaitsForTheGreeting() {
+        #expect(BreathingCueScript.delayBeforeFirstInhale(greetingEndedAfter: 1.5) == 1.5)
+        #expect(BreathingCueScript.delayBeforeFirstInhale(greetingEndedAfter: 3.5) == BreathingCueScript.pauseAfterGreeting)
+        #expect(BreathingCueScript.pauseAfterGreeting == 0.75)
     }
 }
