@@ -1140,82 +1140,106 @@ struct CrisisMessageMoodTests {
 
 // MARK: - Voice-guided Box Breathing
 
-// The spoken cues must line up with the circle on screen. Since Revision 2 (Joel, 2026-11-16) the
-// phases are inhale 3 s, hold 4 s, exhale 3 s, hold 4 s, with one short utterance per second so speech
-// can never drift behind the animation. Cues are punctuated so the system voice pauses naturally.
+// Revision 3 (Joel, 2026-11-16): every phase is 3 s (inhale, hold, exhale, hold). Alex, the coach,
+// speaks one short, natural line per phase ("Breathe in… two… three."); the line for the next phase
+// cuts off anything left over, so speech can never drift behind the lungs.
 struct BreathingCueScriptTests {
 
     @Test func phasesRunInBoxBreathingOrder() {
         #expect(BreathingPhase.allCases == [.inhale, .holdAfterInhale, .exhale, .holdAfterExhale])
     }
 
-    @Test func phaseLabelsAndScalesMatchTheExistingAnimation() {
+    @Test func phaseLabelsAndScalesMatchTheAnimation() {
         #expect(BreathingPhase.allCases.map(\.label) == ["Inhale", "Hold", "Exhale", "Hold"])
         #expect(BreathingPhase.allCases.map(\.targetScale) == [1.5, 1.5, 1.0, 1.0])
     }
 
-    @Test func inhaleAndExhaleAreThreeSecondsHoldsStayFour() {
-        #expect(BreathingPhase.allCases.map(\.seconds) == [3, 4, 3, 4])
-        #expect(BreathingCueScript.cycleSeconds == 14)
+    @Test func everyPhaseIsThreeSeconds() {
+        #expect(BreathingPhase.allCases.map(\.seconds) == [3, 3, 3, 3])
+        #expect(BreathingCueScript.cycleSeconds == 12)
         #expect(BreathingCueScript.cycles == 4)
-        #expect(BreathingCueScript.cycleSeconds * BreathingCueScript.cycles == 56)
-        #expect(BreathingCueScript.header == "Inhale 3s · Hold 4s · Exhale 3s · Hold 4s")
+        #expect(BreathingCueScript.cycleSeconds * BreathingCueScript.cycles == 48)
+        #expect(BreathingCueScript.header == "Inhale 3s · Hold 3s · Exhale 3s · Hold 3s")
     }
 
-    @Test func eachPhaseSpeaksItsCueThenCountsWithPauses() {
-        #expect(BreathingCueScript.cues(for: .inhale)          == ["Breathe in.", "Two.", "Three."])
-        #expect(BreathingCueScript.cues(for: .holdAfterInhale) == ["Hold.", "Two.", "Three.", "Four."])
-        #expect(BreathingCueScript.cues(for: .exhale)          == ["Breathe out.", "Two.", "Three."])
-        #expect(BreathingCueScript.cues(for: .holdAfterExhale) == ["Hold.", "Two.", "Three.", "Four."])
+    @Test func eachPhaseIsOneNaturalLineCountingToThree() {
+        #expect(BreathingCueScript.cue(for: .inhale)          == "Breathe in… two… three.")
+        #expect(BreathingCueScript.cue(for: .holdAfterInhale) == "Hold… two… three.")
+        #expect(BreathingCueScript.cue(for: .exhale)          == "Breathe out… two… three.")
+        #expect(BreathingCueScript.cue(for: .holdAfterExhale) == "Hold… two… three.")
+        #expect(BreathingCueScript.letsBegin == "Great. Nice and slow.")
     }
 
-    @Test func oneCuePerSecondOfEveryPhase() {
-        for phase in BreathingPhase.allCases {
-            #expect(BreathingCueScript.cues(for: phase).count == phase.seconds)
-        }
-    }
-
-    @Test func greetingAsksHowTheyFeelWithTheirName() {
-        #expect(BreathingCueScript.greeting(name: "Alexandria") == "Hi Alexandria, good day. How are you feeling today?")
-        #expect(BreathingCueScript.greeting(name: "  Alexandria \n") == "Hi Alexandria, good day. How are you feeling today?")
-    }
-
-    @Test func greetingSaysHiThereWithoutAName() {
-        #expect(BreathingCueScript.greeting(name: nil) == "Hi there, good day. How are you feeling today?")
-        #expect(BreathingCueScript.greeting(name: "") == "Hi there, good day. How are you feeling today?")
-        #expect(BreathingCueScript.greeting(name: "   ") == "Hi there, good day. How are you feeling today?")
-    }
-
-    @Test func readyCheckAndGentleLines() {
+    @Test func alexIntroducesHerselfWithoutAName() {
+        #expect(BreathingCueScript.coachName == "Alex")
+        #expect(BreathingCueScript.opening == "Hi there, I'm Alex, your breathing coach. How are you feeling right now?")
+        #expect(BreathingCueScript.thanks == "Thank you for sharing.")
         #expect(BreathingCueScript.readyQuestion == "Are you ready to begin?")
-        #expect(BreathingCueScript.notFollowing == "Try to breathe with the circle.")
-        #expect(BreathingCueScript.declined == "That's okay. Come back whenever you're ready.")
+        #expect(BreathingCueScript.declined == "No problem. Whenever you're ready, come back.")
     }
 
-    @Test func congratulationsUsesTheNameWhenSet() {
-        #expect(BreathingCueScript.congratulations(name: "Alexandria")
-                == "Congratulations, Alexandria, you've completed your breathing for today. See you again tomorrow.")
-        #expect(BreathingCueScript.congratulations(name: nil)
-                == "Congratulations, you've completed your breathing for today. See you again tomorrow.")
-        #expect(BreathingCueScript.congratulations(name: "  ")
+    @Test func missedCycleAndEndingLines() {
+        #expect(BreathingCueScript.tryAgain == "Let's try that again. Breathe in with the circle.")
+        #expect(BreathingCueScript.tooManyMisses == "Take your time. We can try again whenever you like.")
+        #expect(BreathingCueScript.congratulations
                 == "Congratulations, you've completed your breathing for today. See you again tomorrow.")
     }
 
-    // Renaming these keys would silently drop every user's saved choice.
-    @Test func settingsAreStoredUnderStableKeys() {
-        #expect(BreathingCueScript.nameKey == "userName")
+    @Test func listensAboutEightSeconds() {
+        #expect(BreathingCueScript.listenSeconds == 8)
+    }
+
+    @Test func voiceChoiceIsAlexOrMenAndRemembered() {
         #expect(BreathingVoiceChoice.storageKey == "breathingVoiceGender")
-        #expect(BreathingVoiceChoice.defaultChoice == .women)
-        #expect(BreathingVoiceChoice.women.label == "Women")
+        #expect(BreathingVoiceChoice.defaultChoice == .alex)
+        #expect(BreathingVoiceChoice.alex.label == "Alex")
         #expect(BreathingVoiceChoice.men.label == "Men")
     }
 
-    // Joel's call (2026-11-16): the plain system voice, a little slower, no pitch change.
+    // Calm and conversational: a little slower than the 0.5 default, no pitch change.
     @Test func voiceIsSlightlySlowerWithNoPitchChange() {
         #expect(BreathingCueScript.voiceRate < AVSpeechUtteranceDefaultSpeechRate)
         #expect(BreathingCueScript.voiceRate >= 0.38)
         #expect(BreathingCueScript.voicePitch == 1.0)
         #expect(BreathingCueScript.voiceLanguage == "en-US")
+    }
+}
+
+// The conversation before the exercise: Alex asks how you feel (the answer is never stored or read),
+// thanks you if you said something, then asks if you're ready. Yes starts; no ends gently; no answer
+// asks once more, then ends gently. There is no start button.
+struct BreathingConversationTests {
+
+    @Test func startsByAskingHowYouFeel() {
+        #expect(BreathingConversation.firstStep == .askFeeling)
+    }
+
+    @Test func anAnswerToHowYouFeelIsThankedThenTheReadyQuestion() {
+        #expect(BreathingConversation.next(after: .askFeeling, .feelingHeard) == .askReady(attempt: 1, thankFirst: true))
+    }
+
+    @Test func silenceAfterHowYouFeelGoesStraightToTheReadyQuestion() {
+        #expect(BreathingConversation.next(after: .askFeeling, .feelingSilent) == .askReady(attempt: 1, thankFirst: false))
+    }
+
+    @Test func yesBegins() {
+        #expect(BreathingConversation.next(after: .askReady(attempt: 1, thankFirst: true), .ready(.yes)) == .begin)
+        #expect(BreathingConversation.next(after: .askReady(attempt: 2, thankFirst: false), .ready(.yes)) == .begin)
+    }
+
+    @Test func noEndsGently() {
+        #expect(BreathingConversation.next(after: .askReady(attempt: 1, thankFirst: false), .ready(.no)) == .endGently)
+    }
+
+    @Test func noAnswerAsksOnceMoreThenEndsGently() {
+        let second = BreathingConversation.next(after: .askReady(attempt: 1, thankFirst: true), .ready(nil))
+        #expect(second == .askReady(attempt: 2, thankFirst: false))
+        #expect(BreathingConversation.next(after: second, .ready(nil)) == .endGently)
+    }
+
+    @Test func eventsThatDoNotFitTheStepChangeNothing() {
+        #expect(BreathingConversation.next(after: .askFeeling, .ready(.yes)) == .askFeeling)
+        #expect(BreathingConversation.next(after: .begin, .feelingHeard) == .begin)
     }
 }
 
@@ -1241,9 +1265,9 @@ struct ReadyAnswerTests {
     }
 }
 
-// Voice choice: Samantha for Women; Aaron for Men when installed, otherwise the best other male
-// en-US voice, preferring Apple's current voices over the old MacinTalk ones, and never a novelty
-// voice, the user's Personal Voice, or the child voice "Junior".
+// Voice: Alex is the best installed US-English female voice (Premium, then Enhanced, then standard).
+// Men: Aaron when installed, otherwise the best other male en-US voice, current voices before the old
+// MacinTalk ones. Never a novelty voice, the user's Personal Voice, or the child voice "Junior".
 struct BreathingVoicePickerTests {
 
     private func voice(_ name: String, gender: AVSpeechSynthesisVoiceGender, quality: AVSpeechSynthesisVoiceQuality = .default,
@@ -1255,18 +1279,31 @@ struct BreathingVoicePickerTests {
 
     private var simulatorSet: [BreathingVoiceCandidate] {
         [voice("Samantha", gender: .female), voice("Fred", gender: .male, legacy: true),
-         voice("Ralph", gender: .male, legacy: true), voice("Junior", gender: .male, legacy: true),
-         voice("Kathy", gender: .female, legacy: true), voice("Zarvox", gender: .male, legacy: true, novelty: true)]
+         voice("Ralph", gender: .unspecified, legacy: true), voice("Junior", gender: .unspecified, legacy: true),
+         voice("Kathy", gender: .unspecified, legacy: true), voice("Zarvox", gender: .male, legacy: true, novelty: true)]
     }
 
-    @Test func womenGetsSamantha() {
-        #expect(BreathingVoicePicker.pick(.women, from: simulatorSet)?.name == "Samantha")
+    @Test func alexPrefersPremiumThenEnhancedThenStandard() {
+        let standard = voice("Samantha", gender: .female)
+        let enhanced = voice("Ava (Enhanced)", gender: .female, quality: .enhanced)
+        let premium  = voice("Zoe (Premium)", gender: .female, quality: .premium)
+        #expect(BreathingVoicePicker.pick(.alex, from: [standard, enhanced, premium])?.name == "Zoe (Premium)")
+        #expect(BreathingVoicePicker.pick(.alex, from: [standard, enhanced])?.name == "Ava (Enhanced)")
+        #expect(BreathingVoicePicker.pick(.alex, from: [standard])?.name == "Samantha")
     }
 
-    @Test func womenPrefersTheBasicSamantha() {
-        let pick = BreathingVoicePicker.pick(.women, from: [voice("Samantha (Enhanced)", gender: .female, quality: .enhanced),
-                                                          voice("Samantha", gender: .female)])
-        #expect(pick?.name == "Samantha")
+    @Test func alexOnTheSimulatorSetIsSamantha() {
+        #expect(BreathingVoicePicker.pick(.alex, from: simulatorSet)?.name == "Samantha")
+    }
+
+    @Test func alexNeverPicksAMaleNoveltyPersonalOrOtherLanguageVoice() {
+        let pick = BreathingVoicePicker.pick(.alex, from: [
+            voice("Aaron", gender: .male, quality: .premium),
+            voice("Bubbles", gender: .female, quality: .premium, novelty: true),
+            voice("Me", gender: .female, quality: .premium, personal: true),
+            voice("Kate", gender: .female, quality: .premium, language: "en-GB"),
+        ])
+        #expect(pick == nil)
     }
 
     @Test func menGetsAaronWhenInstalled() {
@@ -1281,17 +1318,6 @@ struct BreathingVoicePickerTests {
 
     @Test func menOnTheSimulatorSetGetsFred() {
         #expect(BreathingVoicePicker.pick(.men, from: simulatorSet)?.name == "Fred")
-    }
-
-    @Test func menNeverPicksNoveltyPersonalChildOrOtherLanguages() {
-        let pick = BreathingVoicePicker.pick(.men, from: [
-            voice("Zarvox", gender: .male, novelty: true),
-            voice("Me", gender: .male, personal: true),
-            voice("Junior", gender: .male, legacy: true),
-            voice("Daniel", gender: .male, language: "en-GB"),
-            voice("Samantha", gender: .female),
-        ])
-        #expect(pick == nil)
     }
 }
 
@@ -1339,9 +1365,18 @@ struct BreathingStreakTests {
         #expect(BreathingStreak.record(state, on: day("2026-12-01"), calendar: calendar).current == 4)
     }
 
+    // Shown on the Breathing screen before a session: a streak still alive today (done today or
+    // yesterday) shows its count; one that has lapsed shows 0.
+    @Test func streakShownBeforeASession() {
+        let state = BreathingStreak.State(current: 5, longest: 8, totalDays: 12, lastDay: "2026-11-16")
+        #expect(BreathingStreak.displayed(state, on: day("2026-11-16"), calendar: calendar) == 5)
+        #expect(BreathingStreak.displayed(state, on: day("2026-11-17"), calendar: calendar) == 5)
+        #expect(BreathingStreak.displayed(state, on: day("2026-11-18"), calendar: calendar) == 0)
+        #expect(BreathingStreak.displayed(.empty, on: day("2026-11-18"), calendar: calendar) == 0)
+    }
+
     @Test func milestonesAt7_14_21_30() {
         #expect(BreathingStreak.milestones == [7, 14, 21, 30])
-        #expect(BreathingStreak.newMilestone(before: .empty, after: BreathingStreak.State(current: 7, longest: 7, totalDays: 7, lastDay: "x")) == 7)
         let six = BreathingStreak.State(current: 6, longest: 6, totalDays: 6, lastDay: "2026-11-16")
         let seven = BreathingStreak.record(six, on: day("2026-11-17"), calendar: calendar)
         #expect(BreathingStreak.newMilestone(before: six, after: seven) == 7)
@@ -1357,7 +1392,6 @@ struct BreathingStreakTests {
         #expect(thirty.current == 30)
         #expect(BreathingStreak.newMilestone(before: twentyNine, after: thirty) == 30)
         #expect(BreathingReward.isUnlocked(by: thirty))
-        // Once earned, a later missed day does not take the reward away.
         let reset = BreathingStreak.record(thirty, on: day("2026-11-20"), calendar: calendar)
         #expect(reset.current == 1)
         #expect(BreathingReward.isUnlocked(by: reset))
@@ -1382,8 +1416,8 @@ struct BreathingStreakTests {
 struct BreathDetectorTests {
 
     /// Samples at 20 Hz over `seconds`, tilting from `from` to `to` degrees about the phone's x axis.
-    private func window(start: Double, seconds: Double, from: Double, to: Double,
-                        accel: Double = 0.005, jitter: Double = 0) -> [BreathMotionSample] {
+    static func window(start: Double, seconds: Double = 3, from: Double, to: Double,
+                       accel: Double = 0.005, jitter: Double = 0) -> [BreathMotionSample] {
         let n = Int(seconds * 20)
         return (0..<n).map { i in
             let f = Double(i) / Double(max(n - 1, 1))
@@ -1397,84 +1431,132 @@ struct BreathDetectorTests {
     @Test func breathingWithTheCircleIsFollowing() {
         var detector = BreathDetector()
         for cycle in 0..<2 {
-            let t = Double(cycle) * 14
-            let verdict = detector.evaluate(inhale: window(start: t, seconds: 3, from: 0, to: 1.0),
-                                            exhale: window(start: t + 7, seconds: 3, from: 1.0, to: 0))
-            #expect(verdict == .following)
+            let t = Double(cycle) * 12
+            #expect(detector.evaluate(inhale: Self.window(start: t, from: 0, to: 1),
+                                      exhale: Self.window(start: t + 6, from: 1, to: 0)) == .following)
         }
     }
 
     @Test func notMovingIsNotFollowing() {
         var detector = BreathDetector()
-        let verdict = detector.evaluate(inhale: window(start: 0, seconds: 3, from: 0, to: 0, jitter: 0.02),
-                                        exhale: window(start: 7, seconds: 3, from: 0, to: 0, jitter: 0.02))
-        #expect(verdict == .notFollowing)
+        #expect(detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 0, jitter: 0.02),
+                                  exhale: Self.window(start: 6, from: 0, to: 0, jitter: 0.02)) == .notFollowing)
     }
 
     @Test func breathingOutOfStepIsNotFollowing() {
         var detector = BreathDetector()
-        _ = detector.evaluate(inhale: window(start: 0, seconds: 3, from: 0, to: 1.0),
-                              exhale: window(start: 7, seconds: 3, from: 1.0, to: 0))
-        // Second cycle: chest falls when the circle says breathe in, rises when it says breathe out.
-        let verdict = detector.evaluate(inhale: window(start: 14, seconds: 3, from: 0, to: -1.0),
-                                        exhale: window(start: 21, seconds: 3, from: -1.0, to: 0))
-        #expect(verdict == .notFollowing)
+        _ = detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 1), exhale: Self.window(start: 6, from: 1, to: 0))
+        #expect(detector.evaluate(inhale: Self.window(start: 12, from: 0, to: -1),
+                                  exhale: Self.window(start: 18, from: -1, to: 0)) == .notFollowing)
     }
 
     @Test func holdingTheBreathThroughTheExhaleIsNotFollowing() {
         var detector = BreathDetector()
-        let verdict = detector.evaluate(inhale: window(start: 0, seconds: 3, from: 0, to: 1.0),
-                                        exhale: window(start: 7, seconds: 3, from: 1.0, to: 1.0))
-        #expect(verdict == .notFollowing)
+        #expect(detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 1),
+                                  exhale: Self.window(start: 6, from: 1, to: 1)) == .notFollowing)
     }
 
     @Test func tooFewSamplesIsUnknown() {
         var detector = BreathDetector()
-        let verdict = detector.evaluate(inhale: Array(window(start: 0, seconds: 3, from: 0, to: 1).prefix(5)),
-                                        exhale: [])
-        #expect(verdict == .unknown)
+        #expect(detector.evaluate(inhale: Array(Self.window(start: 0, from: 0, to: 1).prefix(5)), exhale: []) == .unknown)
     }
 
     @Test func aMovingPhoneIsUnknownNotAFailure() {
         var detector = BreathDetector()
-        let verdict = detector.evaluate(inhale: window(start: 0, seconds: 3, from: 0, to: 0, accel: 0.2),
-                                        exhale: window(start: 7, seconds: 3, from: 0, to: 0, accel: 0.2))
-        #expect(verdict == .unknown)
-    }
-
-    // Never trap someone in a loop of "try again": pause at most twice, then just keep the rhythm.
-    @Test func pausesAtMostTwicePerSession() {
-        #expect(BreathingSensingPolicy.shouldPause(after: .notFollowing, pausesSoFar: 0))
-        #expect(BreathingSensingPolicy.shouldPause(after: .notFollowing, pausesSoFar: 1))
-        #expect(BreathingSensingPolicy.shouldPause(after: .notFollowing, pausesSoFar: 2) == false)
-        #expect(BreathingSensingPolicy.shouldPause(after: .unknown, pausesSoFar: 0) == false)
-        #expect(BreathingSensingPolicy.shouldPause(after: .following, pausesSoFar: 0) == false)
+        #expect(detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 0, accel: 0.2),
+                                  exhale: Self.window(start: 6, from: 0, to: 0, accel: 0.2)) == .unknown)
     }
 }
 
-// At full size (scale 1.5) the circle spills a quarter of its size past its frame on each side; the
-// layout must reserve that room or the circle covers the "Box Breathing" heading. On short screens
-// (iPhone SE) the circle shrinks so the heading, description, status line and controls all fit.
+// Pause and resume (Joel's bug report, Revision 3): detection must re-arm after EVERY resume. Feeding
+// breathing → stopped → breathing → stopped → breathing must give a pause and a resume each time; a
+// third missed cycle ends gently, so a mis-reading sensor can never loop forever.
+struct BreathingCoachTests {
+
+    private enum Breath { case breathing, stopped }
+
+    private func verdicts(_ pattern: [Breath]) -> [BreathVerdict] {
+        var detector = BreathDetector()
+        return pattern.enumerated().map { i, breath in
+            let t = Double(i) * 12
+            switch breath {
+            case .breathing: return detector.evaluate(inhale: BreathDetectorTests.window(start: t, from: 0, to: 1),
+                                                      exhale: BreathDetectorTests.window(start: t + 6, from: 1, to: 0))
+            case .stopped:   return detector.evaluate(inhale: BreathDetectorTests.window(start: t, from: 0, to: 0, jitter: 0.02),
+                                                      exhale: BreathDetectorTests.window(start: t + 6, from: 0, to: 0, jitter: 0.02))
+            }
+        }
+    }
+
+    @Test func detectionReArmsAfterEveryResume() {
+        let seen = verdicts([.breathing, .stopped, .breathing, .stopped, .breathing])
+        #expect(seen == [.following, .notFollowing, .following, .notFollowing, .following])
+
+        var coach = BreathingCoach()
+        let actions = seen.map { coach.record($0) }
+        #expect(actions == [.nextCycle, .tryAgain, .nextCycle, .tryAgain, .nextCycle])
+        #expect(coach.completedCycles == 3)
+        #expect(coach.missedCycles == 2)
+        #expect(coach.record(.following) == .finished)        // the fourth followed cycle completes it
+    }
+
+    @Test func threeMissedCyclesEndGently() {
+        var coach = BreathingCoach()
+        #expect(coach.record(.notFollowing) == .tryAgain)
+        #expect(coach.record(.notFollowing) == .tryAgain)
+        #expect(coach.record(.notFollowing) == .endGently)
+        #expect(BreathingCoach.maximumMisses == 3)
+    }
+
+    // No motion data (simulator, phone moved) never blocks: the cycle counts and the timer continues.
+    @Test func unknownNeverBlocks() {
+        var coach = BreathingCoach()
+        let actions = (0..<4).map { _ in coach.record(.unknown) }
+        #expect(actions == [.nextCycle, .nextCycle, .nextCycle, .finished])
+    }
+}
+
+#if DEBUG
+// Simulator-only overrides (compiled out of Release): stand-in answers for the listening steps and
+// stand-in breath verdicts, because the simulator has no real microphone input or motion sensor.
+struct BreathingDebugTests {
+
+    @Test func readsStandInAnswers() {
+        #expect(BreathingDebug.answer(from: "yes") == .yes)
+        #expect(BreathingDebug.answer(from: "no") == .no)
+        #expect(BreathingDebug.answer(from: "silent") == nil)
+    }
+
+    @Test func readsStandInVerdicts() {
+        #expect(BreathingDebug.verdicts(from: "miss,follow,unknown") == [.notFollowing, .following, .unknown])
+        #expect(BreathingDebug.verdicts(from: nil) == [])
+    }
+}
+#endif
+
+// At full size (scale 1.5) the visual spills a quarter of its size past its frame on each side; the
+// layout must reserve that room or it covers the "Box Breathing" heading. On short screens (iPhone SE)
+// it shrinks so the heading, description, status lines and controls all fit.
 struct BreathingLayoutTests {
 
-    @Test func reservesRoomForTheFullSizeCircle() {
+    @Test func reservesRoomForTheFullSizeVisual() {
         #expect(BreathingLayout.maxScale == 1.5)
         #expect(BreathingLayout.overflow(for: 220) == 55)
     }
 
-    @Test func tallScreensKeepTheOriginal220ptCircle() {
+    @Test func tallScreensKeepTheOriginal220ptSize() {
         #expect(BreathingLayout.circleSize(forHeight: 760) == 220)   // iPhone 17 Pro Max sheet
         #expect(BreathingLayout.circleSize(forHeight: 2000) == 220)
     }
 
-    @Test func shortScreensShrinkTheCircleSoEverythingFits() {
+    @Test func shortScreensShrinkSoEverythingFits() {
         let seHeight: CGFloat = 529                                   // iPhone SE sheet, inside padding
         let size = BreathingLayout.circleSize(forHeight: seHeight)
         #expect(size < 220)
         #expect(size * BreathingLayout.maxScale + BreathingLayout.otherContentHeight <= seHeight)
     }
 
-    @Test func circleNeverCollapses() {
+    @Test func neverCollapses() {
         #expect(BreathingLayout.circleSize(forHeight: 100) == BreathingLayout.minimumCircleSize)
     }
 }
