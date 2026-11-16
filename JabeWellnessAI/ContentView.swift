@@ -2468,6 +2468,187 @@ struct GuidedExercisesView: View {
     }
 }
 
+// MARK: Breathing Voice Guide
+
+/// The four box-breathing phases, in order. Drives both the circle and the spoken cues, so the
+/// voice and the screen can never disagree about what the user should be doing.
+nonisolated enum BreathingPhase: CaseIterable {
+    case inhale, holdAfterInhale, exhale, holdAfterExhale
+
+    var label: String {
+        switch self {
+        case .inhale:                            return "Inhale"
+        case .holdAfterInhale, .holdAfterExhale: return "Hold"
+        case .exhale:                            return "Exhale"
+        }
+    }
+
+    var targetScale: CGFloat {
+        switch self {
+        case .inhale, .holdAfterInhale: return 1.5
+        case .exhale, .holdAfterExhale: return 1.0
+        }
+    }
+
+    var spokenCue: String {
+        switch self {
+        case .inhale:                            return "Breathe in"
+        case .holdAfterInhale, .holdAfterExhale: return "Hold"
+        case .exhale:                            return "Breathe out"
+        }
+    }
+}
+
+/// What the voice says. One short utterance per second (the cue, then "two", "three", "four"), so
+/// each one finishes before the next tick and speech cannot drift behind the animation.
+nonisolated enum BreathingCueScript {
+    static let secondsPerPhase = 4
+    static let closing = "Well done. Take a moment to notice how you feel."
+
+    static func cues(for phase: BreathingPhase) -> [String] {
+        [phase.spokenCue, "two", "three", "four"]
+    }
+
+    /// The app stores no name today, so callers pass nil and get the neutral line.
+    static func greeting(name: String?) -> String {
+        let base    = "Let's take a deep breath."
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? base : "Hi \(trimmed). \(base)"
+    }
+}
+
+/// A plain copy of the voice fields the picker needs, so the choice can be unit-tested without
+/// depending on which voices a given device or simulator has installed.
+nonisolated struct BreathingVoiceCandidate {
+    let identifier: String
+    let name:       String
+    let language:   String
+    let quality:    AVSpeechSynthesisVoiceQuality
+    let isNovelty:  Bool
+    let isPersonal: Bool
+}
+
+nonisolated extension BreathingVoiceCandidate {
+    init(voice: AVSpeechSynthesisVoice) {
+        self.init(identifier: voice.identifier, name: voice.name, language: voice.language,
+                  quality: voice.quality,
+                  isNovelty:  voice.voiceTraits.contains(.isNoveltyVoice),
+                  isPersonal: voice.voiceTraits.contains(.isPersonalVoice))
+    }
+}
+
+nonisolated enum BreathingVoicePicker {
+    /// Voices that sound soft and unhurried; used only to break a tie at the same quality.
+    static let calmNames = ["Ava", "Zoe", "Samantha", "Allison", "Susan"]
+
+    /// The highest-quality en-US voice above default, skipping novelty voices ("Bubbles", "Zarvox")
+    /// and the user's own Personal Voice. nil means "use the system default en-US voice".
+    static func pick(from candidates: [BreathingVoiceCandidate], language: String = "en-US") -> BreathingVoiceCandidate? {
+        func calmRank(_ c: BreathingVoiceCandidate) -> Int {
+            let base = c.name.components(separatedBy: " (").first ?? c.name   // "Ava (Premium)" → "Ava"
+            return calmNames.firstIndex(of: base) ?? calmNames.count
+        }
+        return candidates
+            .filter { $0.language == language && !$0.isNovelty && !$0.isPersonal && $0.quality != .default }
+            .min { a, b in
+                if a.quality != b.quality { return a.quality.rawValue > b.quality.rawValue }
+                if calmRank(a) != calmRank(b) { return calmRank(a) < calmRank(b) }
+                return a.name < b.name
+            }
+    }
+}
+
+/// Speaks the breathing cues on the device (AVSpeechSynthesizer; no network, no text leaves the
+/// phone). Owns the audio session only while guiding, and never touches it while the chat
+/// microphone is recording.
+final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+
+    // Slower and a touch lower than the defaults (0.5 rate, 1.0 pitch) for a calm tone.
+    static let rate:  Float = 0.42
+    static let pitch: Float = 0.95
+
+    // var, not let: keeps it main-actor isolated (AVSpeechSynthesizer is not Sendable).
+    private var synthesizer = AVSpeechSynthesizer()
+    private lazy var voice: AVSpeechSynthesisVoice? = {
+        let installed = AVSpeechSynthesisVoice.speechVoices().map(BreathingVoiceCandidate.init(voice:))
+        if let best = BreathingVoicePicker.pick(from: installed),
+           let chosen = AVSpeechSynthesisVoice(identifier: best.identifier) {
+            return chosen
+        }
+        return AVSpeechSynthesisVoice(language: "en-US")
+    }()
+    private var ownsAudioSession = false
+    private var releaseWhenIdle  = false
+    private var pending          = 0
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    /// Play through the silent switch and lower other audio while guiding. If the chat mic is
+    /// still recording (.record), leave the session alone so the recording is not cut off.
+    func prepare() {
+        releaseWhenIdle = false
+        #if os(iOS)
+        guard !ownsAudioSession else { return }
+        let session = AVAudioSession.sharedInstance()
+        guard session.category != .record else { return }
+        do {
+            try session.setCategory(.playback, mode: .spokenAudio, options: .duckOthers)
+            try session.setActive(true)
+            ownsAudioSession = true
+        } catch {
+            print("Breathing audio session setup failed:", error)
+        }
+        #endif
+    }
+
+    func speak(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice           = voice
+        utterance.rate            = Self.rate
+        utterance.pitchMultiplier = Self.pitch
+        pending += 1
+        synthesizer.speak(utterance)
+    }
+
+    /// Let anything still queued (the closing line) finish, then hand the audio back.
+    func finish() {
+        releaseWhenIdle = true
+        if pending == 0 { releaseAudioSession() }
+    }
+
+    /// Stop now: Done tapped, sheet closed, or voice switched off.
+    func stop() {
+        synthesizer.stopSpeaking(at: .immediate)
+        pending = 0
+        releaseAudioSession()
+    }
+
+    private func releaseAudioSession() {
+        releaseWhenIdle = false
+        #if os(iOS)
+        guard ownsAudioSession else { return }
+        ownsAudioSession = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
+    }
+
+    private func utteranceEnded() {
+        pending = max(0, pending - 1)
+        if releaseWhenIdle && pending == 0 { releaseAudioSession() }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in self?.utteranceEnded() }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor [weak self] in self?.utteranceEnded() }
+    }
+}
+
 // MARK: Box Breathing
 
 struct BreathingExerciseView: View {
@@ -2475,11 +2656,18 @@ struct BreathingExerciseView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.requestReview) private var requestReview
 
+    // Seconds of "Get ready" while the greeting is spoken, before the first inhale.
+    private static let voiceLeadIn: Double = 3
+
+    @AppStorage("breathingVoiceEnabled") private var voiceEnabled = true
+    @StateObject private var guide = BreathingVoiceGuide()
+
     @State private var phase      = "Tap to Begin"
     @State private var scale: CGFloat = 1.0
     @State private var isRunning  = false
     @State private var isActive   = true
     @State private var cycleCount = 0
+    @State private var phaseStep  = 0   // bumps on every phase change; drives the haptic pulse
 
     var body: some View {
         NavigationView {
@@ -2513,30 +2701,54 @@ struct BreathingExerciseView: View {
                     }
                 }
 
+                Toggle(isOn: $voiceEnabled) {
+                    Label("Voice guide", systemImage: voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                        .font(.subheadline)
+                }
+                .tint(.teal)
+                .frame(maxWidth: 240)
+                .accessibilityIdentifier("breathingVoiceToggle")
+                .onChange(of: voiceEnabled) { _, on in
+                    guard isRunning else { return }
+                    if on { guide.prepare() } else { guide.stop() }
+                }
+
                 Spacer()
             }
             .padding(24)
+            .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.7), trigger: phaseStep)
             .navigationTitle("Breathing")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { isActive = false; dismiss() }
+                    Button("Done") { isActive = false; guide.stop(); dismiss() }
                 }
             }
-            .onDisappear { isActive = false }
+            .onDisappear { isActive = false; guide.stop() }
         }
     }
 
     private func startCycles() {
         isRunning  = true
         cycleCount = 0
-        runPhases(remaining: 4)
+        guard voiceEnabled else { runPhases(remaining: 4); return }
+        // Voice on: a short "Get ready" while the greeting plays, then the first inhale.
+        // No name is stored in the app, so the greeting is the neutral line.
+        guide.prepare()
+        phase = "Get ready"
+        guide.speak(BreathingCueScript.greeting(name: nil))
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.voiceLeadIn) {
+            guard isActive else { return }
+            runPhases(remaining: 4)
+        }
     }
 
     private func runPhases(remaining: Int) {
         guard remaining > 0 else {
             phase     = "Well done! 🎉"
             isRunning = false
+            if voiceEnabled { guide.speak(BreathingCueScript.closing) }
+            guide.finish()
             // A calm, finished moment: let the celebration land, then maybe ask. Skipped if closed.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -2545,22 +2757,31 @@ struct BreathingExerciseView: View {
             }
             return
         }
-        animate("Inhale", toScale: 1.5, duration: 4) {
-            animate("Hold", toScale: 1.5, duration: 4) {
-                animate("Exhale", toScale: 1.0, duration: 4) {
-                    animate("Hold", toScale: 1.0, duration: 4) {
-                        cycleCount += 1
-                        runPhases(remaining: remaining - 1)
-                    }
-                }
-            }
+        runCycle(from: 0) {
+            cycleCount += 1
+            runPhases(remaining: remaining - 1)
         }
     }
 
-    private func animate(_ label: String, toScale s: CGFloat, duration: Double, then: @escaping () -> Void) {
+    private func runCycle(from index: Int, then done: @escaping () -> Void) {
+        let phases = BreathingPhase.allCases
+        guard index < phases.count else { done(); return }
+        animate(phases[index]) { runCycle(from: index + 1, then: done) }
+    }
+
+    private func animate(_ step: BreathingPhase, then: @escaping () -> Void) {
         guard isActive else { return }
-        phase = label
-        withAnimation(.easeInOut(duration: duration)) { scale = s }
+        let duration = Double(BreathingCueScript.secondsPerPhase)
+        phase      = step.label
+        phaseStep += 1
+        withAnimation(.easeInOut(duration: duration)) { scale = step.targetScale }
+        // One cue per second, so each is spoken in step with the circle.
+        for (second, cue) in BreathingCueScript.cues(for: step).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(second)) {
+                guard isActive, voiceEnabled else { return }
+                guide.speak(cue)
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { then() }
     }
 }

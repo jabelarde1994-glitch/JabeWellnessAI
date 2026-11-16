@@ -8,6 +8,7 @@
 import Testing
 import Foundation
 import DeviceCheck
+import AVFoundation
 @testable import JabeWellnessAI
 
 struct JabeWellnessAITests {
@@ -1134,5 +1135,93 @@ struct CrisisMessageMoodTests {
         #expect(vm.messages.count == 2)
         #expect(vm.messages.last?.isUser == false)
         #expect(vm.messages.last?.mood == nil)
+    }
+}
+
+// MARK: - Voice-guided Box Breathing
+
+// The spoken cues must line up with the circle on screen: one phase per 4 seconds, in the order
+// inhale, hold, exhale, hold, with one short utterance per second so speech can never drift
+// behind the animation. The app stores no user name, so the greeting falls back to a neutral line.
+struct BreathingCueScriptTests {
+
+    @Test func phasesRunInBoxBreathingOrder() {
+        #expect(BreathingPhase.allCases == [.inhale, .holdAfterInhale, .exhale, .holdAfterExhale])
+    }
+
+    @Test func phaseLabelsAndScalesMatchTheExistingAnimation() {
+        #expect(BreathingPhase.allCases.map(\.label) == ["Inhale", "Hold", "Exhale", "Hold"])
+        #expect(BreathingPhase.allCases.map(\.targetScale) == [1.5, 1.5, 1.0, 1.0])
+    }
+
+    @Test func eachPhaseSpeaksItsCueThenCountsToFour() {
+        #expect(BreathingCueScript.cues(for: .inhale)          == ["Breathe in", "two", "three", "four"])
+        #expect(BreathingCueScript.cues(for: .holdAfterInhale) == ["Hold", "two", "three", "four"])
+        #expect(BreathingCueScript.cues(for: .exhale)          == ["Breathe out", "two", "three", "four"])
+        #expect(BreathingCueScript.cues(for: .holdAfterExhale) == ["Hold", "two", "three", "four"])
+    }
+
+    @Test func oneCuePerSecondOfEveryPhase() {
+        for phase in BreathingPhase.allCases {
+            #expect(BreathingCueScript.cues(for: phase).count == BreathingCueScript.secondsPerPhase)
+        }
+        #expect(BreathingCueScript.secondsPerPhase == 4)
+    }
+
+    @Test func greetingFallsBackToNeutralWithoutAName() {
+        #expect(BreathingCueScript.greeting(name: nil) == "Let's take a deep breath.")
+        #expect(BreathingCueScript.greeting(name: "") == "Let's take a deep breath.")
+        #expect(BreathingCueScript.greeting(name: "   ") == "Let's take a deep breath.")
+    }
+
+    @Test func greetingUsesANameWhenOneIsGiven() {
+        #expect(BreathingCueScript.greeting(name: "Sam") == "Hi Sam. Let's take a deep breath.")
+        #expect(BreathingCueScript.greeting(name: "  Sam ") == "Hi Sam. Let's take a deep breath.")
+    }
+
+    @Test func closingLineIsCalm() {
+        #expect(BreathingCueScript.closing == "Well done. Take a moment to notice how you feel.")
+    }
+}
+
+// Voice choice: the best installed en-US voice, never a novelty voice ("Bubbles", "Zarvox") or the
+// user's own Personal Voice. nil means "use the system default en-US voice".
+struct BreathingVoicePickerTests {
+
+    private func voice(_ name: String, _ quality: AVSpeechSynthesisVoiceQuality,
+                       language: String = "en-US", novelty: Bool = false, personal: Bool = false) -> BreathingVoiceCandidate {
+        BreathingVoiceCandidate(identifier: "id.\(name)", name: name, language: language,
+                                quality: quality, isNovelty: novelty, isPersonal: personal)
+    }
+
+    @Test func prefersPremiumOverEnhanced() {
+        let pick = BreathingVoicePicker.pick(from: [voice("Evan", .enhanced), voice("Zoe", .premium)])
+        #expect(pick?.name == "Zoe")
+    }
+
+    @Test func ignoresOtherLanguages() {
+        let pick = BreathingVoicePicker.pick(from: [voice("Kate", .premium, language: "en-GB"), voice("Evan", .enhanced)])
+        #expect(pick?.name == "Evan")
+    }
+
+    @Test func ignoresNoveltyAndPersonalVoices() {
+        let pick = BreathingVoicePicker.pick(from: [
+            voice("Bubbles", .premium, novelty: true),
+            voice("Me", .premium, personal: true),
+            voice("Evan", .enhanced),
+        ])
+        #expect(pick?.name == "Evan")
+    }
+
+    @Test func returnsNilWhenOnlyDefaultQualityIsInstalled() {
+        #expect(BreathingVoicePicker.pick(from: [voice("Samantha", .default), voice("Fred", .default)]) == nil)
+        #expect(BreathingVoicePicker.pick(from: []) == nil)
+    }
+
+    @Test func breaksTiesWithTheCalmVoiceListThenByName() {
+        let calm = BreathingVoicePicker.pick(from: [voice("Nathan", .enhanced), voice("Ava", .enhanced)])
+        #expect(calm?.name == "Ava")
+        let alpha = BreathingVoicePicker.pick(from: [voice("Tom", .enhanced), voice("Reed", .enhanced)])
+        #expect(alpha?.name == "Reed")
     }
 }
