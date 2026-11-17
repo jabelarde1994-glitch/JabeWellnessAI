@@ -1140,49 +1140,82 @@ struct CrisisMessageMoodTests {
 
 // MARK: - Voice-guided Box Breathing
 
-// Revision 3 (Joel, 2026-11-16): every phase is 3 s (inhale, hold, exhale, hold). Alex, the coach,
-// speaks one short, natural line per phase ("Breathe in… two… three."); the line for the next phase
-// cuts off anything left over, so speech can never drift behind the lungs.
+// Round 4 (Joel, 2026-11-16, real-iPhone test): every phase is 3 s; Alex speaks one warm line per phase,
+// near Apple's normal speed with a little more energy, and no long pauses inside a phrase.
 struct BreathingCueScriptTests {
 
     @Test func phasesRunInBoxBreathingOrder() {
         #expect(BreathingPhase.allCases == [.inhale, .holdAfterInhale, .exhale, .holdAfterExhale])
+        #expect(BreathingPhase.allCases.map(\.label) == ["Inhale", "Hold", "Exhale", "Hold"])
     }
 
-    @Test func phaseLabelsAndScalesMatchTheAnimation() {
-        #expect(BreathingPhase.allCases.map(\.label) == ["Inhale", "Hold", "Exhale", "Hold"])
-        #expect(BreathingPhase.allCases.map(\.targetScale) == [1.5, 1.5, 1.0, 1.0])
+    // Only the breathing phases are checked against the sensor; the holds are not.
+    @Test func onlyInhaleAndExhaleExpectABreath() {
+        #expect(BreathingPhase.allCases.map(\.expectedBreath) == [.inhaling, nil, .exhaling, nil])
     }
 
     @Test func everyPhaseIsThreeSeconds() {
         #expect(BreathingPhase.allCases.map(\.seconds) == [3, 3, 3, 3])
         #expect(BreathingCueScript.cycleSeconds == 12)
         #expect(BreathingCueScript.cycles == 4)
-        #expect(BreathingCueScript.cycleSeconds * BreathingCueScript.cycles == 48)
         #expect(BreathingCueScript.header == "Inhale 3s · Hold 3s · Exhale 3s · Hold 3s")
     }
 
-    @Test func eachPhaseIsOneNaturalLineCountingToThree() {
-        #expect(BreathingCueScript.cue(for: .inhale)          == "Breathe in… two… three.")
-        #expect(BreathingCueScript.cue(for: .holdAfterInhale) == "Hold… two… three.")
-        #expect(BreathingCueScript.cue(for: .exhale)          == "Breathe out… two… three.")
-        #expect(BreathingCueScript.cue(for: .holdAfterExhale) == "Hold… two… three.")
-        #expect(BreathingCueScript.letsBegin == "Great. Nice and slow.")
+    @Test func eachPhaseIsOneWarmLineCountingToThree() {
+        #expect(BreathingCueScript.cue(for: .inhale)          == "Breathe in, two, three.")
+        #expect(BreathingCueScript.cue(for: .holdAfterInhale) == "Gently hold, two, three.")
+        #expect(BreathingCueScript.cue(for: .exhale)          == "Now breathe out, two, three.")
+        #expect(BreathingCueScript.cue(for: .holdAfterExhale) == "And hold, two, three.")
     }
 
-    @Test func alexIntroducesHerselfWithoutAName() {
-        #expect(BreathingCueScript.coachName == "Alex")
-        #expect(BreathingCueScript.opening == "Hi there, I'm Alex, your breathing coach. How are you feeling right now?")
-        #expect(BreathingCueScript.thanks == "Thank you for sharing.")
-        #expect(BreathingCueScript.readyQuestion == "Are you ready to begin?")
-        #expect(BreathingCueScript.declined == "No problem. Whenever you're ready, come back.")
+    // Round 4: the ellipses made long gaps inside a phrase; commas give short, natural ones.
+    @Test func noLongPausesInsideAnyLine() {
+        let lines = BreathingCueScript.allSpokenLines(name: "Sam")
+        #expect(!lines.isEmpty)
+        #expect(lines.allSatisfy { !$0.contains("…") && !$0.contains("...") })
     }
 
-    @Test func missedCycleAndEndingLines() {
-        #expect(BreathingCueScript.tryAgain == "Let's try that again. Breathe in with the circle.")
-        #expect(BreathingCueScript.tooManyMisses == "Take your time. We can try again whenever you like.")
+    @Test func greetsByFirstNameWhenKnownOtherwiseHiThere() {
+        #expect(BreathingCueScript.opening(name: nil)
+                == "Hi there, I'm Alex, your breathing coach. It's so nice to see you. How are you feeling right now?")
+        #expect(BreathingCueScript.opening(name: "Sam")
+                == "Hi Sam, I'm Alex, your breathing coach. It's so nice to see you. How are you feeling right now?")
+        #expect(BreathingCueScript.opening(name: "  ") == BreathingCueScript.opening(name: nil))
+    }
+
+    @Test func conversationLinesAreWarm() {
+        #expect(BreathingCueScript.coachName     == "Alex")
+        #expect(BreathingCueScript.thanks        == "Thank you for sharing that with me.")
+        #expect(BreathingCueScript.readyQuestion == "Are you ready to breathe together?")
+        #expect(BreathingCueScript.readyAgain    == "Take your time. Just say yes when you'd like to begin.")
+        #expect(BreathingCueScript.declined      == "That's completely okay. I'll be right here whenever you'd like to breathe together.")
+    }
+
+    @Test func calibrationLinesAskForNaturalBreathing() {
+        #expect(BreathingCueScript.settle         == "Let's get comfortable first. Rest your phone gently on your chest.")
+        #expect(BreathingCueScript.calibrate      == "Now breathe in and out naturally, and I'll follow along with you.")
+        #expect(BreathingCueScript.calibrateAgain == "I couldn't quite feel your breathing yet, and that's okay. Let's try once more. Breathe in and out naturally, with your phone resting on your chest.")
+        #expect(BreathingCueScript.letsBegin      == "Lovely, I can feel your breathing. Let's take a slow breath in together.")
+    }
+
+    // Round 4, item 6: the pause line Joel asked for, and no "three misses" ending any more.
+    @Test func pauseLineAndEndings() {
+        #expect(BreathingCueScript.pause == "Let's rest for a moment. Breathe in with me whenever you're ready, and we'll continue from here.")
         #expect(BreathingCueScript.congratulations
-                == "Congratulations, you've completed your breathing for today. See you again tomorrow.")
+                == "Wonderful, you've completed your breathing for today. Thank you for taking this time for yourself.")
+        #expect(BreathingCueScript.anotherRound      == "Would you like to do another round?")
+        #expect(BreathingCueScript.anotherRoundAgain == "Just say yes if you'd like another round, or no if you're all done.")
+        #expect(BreathingCueScript.goAgain           == "Lovely, let's go again together.")
+        #expect(BreathingCueScript.goodbye           == "That's okay. Thank you for breathing with me today. See you again tomorrow.")
+    }
+
+    // Round 4, item 2: no "I'm ready" button. A refused microphone gets a plain request to allow it.
+    @Test func cannotHearAsksToAllowTheMicrophoneInSettings() {
+        let refused = BreathingCueScript.cannotHear(permissionRefused: true)
+        #expect(refused.contains("Settings"))
+        #expect(refused.contains("Microphone"))
+        #expect(!refused.contains("I'm ready"))
+        #expect(!BreathingCueScript.cannotHear(permissionRefused: false).contains("I'm ready"))
     }
 
     @Test func listensAboutEightSeconds() {
@@ -1196,18 +1229,27 @@ struct BreathingCueScriptTests {
         #expect(BreathingVoiceChoice.men.label == "Men")
     }
 
-    // Calm and conversational: a little slower than the 0.5 default, no pitch change.
-    @Test func voiceIsSlightlySlowerWithNoPitchChange() {
-        #expect(BreathingCueScript.voiceRate < AVSpeechUtteranceDefaultSpeechRate)
-        #expect(BreathingCueScript.voiceRate >= 0.38)
-        #expect(BreathingCueScript.voicePitch == 1.0)
+    // Round 4, item 1: Apple's normal speed (0.5), pitch 1.05 for a little energy, no added gaps.
+    @Test func voiceIsNormalSpeedWithALittleMoreEnergy() {
+        #expect(BreathingCueScript.voiceRate == AVSpeechUtteranceDefaultSpeechRate)
+        #expect(BreathingCueScript.voiceRate == 0.5)
+        #expect(BreathingCueScript.voicePitch == 1.05)
         #expect(BreathingCueScript.voiceLanguage == "en-US")
+    }
+
+    @Test func everyUtteranceUsesTheseSettings() {
+        let u = BreathingCueScript.utterance("Breathe in, two, three.", voice: nil)
+        #expect(u.speechString == "Breathe in, two, three.")
+        #expect(u.rate == 0.5)
+        #expect(u.pitchMultiplier == 1.05)
+        #expect(u.preUtteranceDelay == 0)
+        #expect(u.postUtteranceDelay == 0)
     }
 }
 
-// The conversation before the exercise: Alex asks how you feel (the answer is never stored or read),
-// thanks you if you said something, then asks if you're ready. Yes starts; no ends gently; no answer
-// asks once more, then ends gently. There is no start button.
+// The talk around the exercise. Before: how you feel, then ready (yes starts, no ends gently, no
+// answer asks once more). After a finished session (round 4, item 3): "Would you like to do another
+// round?" Yes goes again, no says goodbye, no answer asks once more, then goodbye.
 struct BreathingConversationTests {
 
     @Test func startsByAskingHowYouFeel() {
@@ -1216,30 +1258,40 @@ struct BreathingConversationTests {
 
     @Test func anAnswerToHowYouFeelIsThankedThenTheReadyQuestion() {
         #expect(BreathingConversation.next(after: .askFeeling, .feelingHeard) == .askReady(attempt: 1, thankFirst: true))
-    }
-
-    @Test func silenceAfterHowYouFeelGoesStraightToTheReadyQuestion() {
         #expect(BreathingConversation.next(after: .askFeeling, .feelingSilent) == .askReady(attempt: 1, thankFirst: false))
     }
 
-    @Test func yesBegins() {
+    @Test func readyYesBeginsNoEndsGently() {
         #expect(BreathingConversation.next(after: .askReady(attempt: 1, thankFirst: true), .ready(.yes)) == .begin)
-        #expect(BreathingConversation.next(after: .askReady(attempt: 2, thankFirst: false), .ready(.yes)) == .begin)
-    }
-
-    @Test func noEndsGently() {
         #expect(BreathingConversation.next(after: .askReady(attempt: 1, thankFirst: false), .ready(.no)) == .endGently)
     }
 
-    @Test func noAnswerAsksOnceMoreThenEndsGently() {
+    @Test func noAnswerToReadyAsksOnceMoreThenEndsGently() {
         let second = BreathingConversation.next(after: .askReady(attempt: 1, thankFirst: true), .ready(nil))
         #expect(second == .askReady(attempt: 2, thankFirst: false))
         #expect(BreathingConversation.next(after: second, .ready(nil)) == .endGently)
     }
 
+    @Test func afterASessionAlexAsksForAnotherRound() {
+        #expect(BreathingConversation.afterSession == .askAnotherRound(attempt: 1))
+    }
+
+    @Test func anotherRoundYesGoesAgainNoSaysGoodbye() {
+        #expect(BreathingConversation.next(after: .askAnotherRound(attempt: 1), .ready(.yes)) == .goAgain)
+        #expect(BreathingConversation.next(after: .askAnotherRound(attempt: 2), .ready(.yes)) == .goAgain)
+        #expect(BreathingConversation.next(after: .askAnotherRound(attempt: 1), .ready(.no)) == .goodbye)
+    }
+
+    @Test func noAnswerToAnotherRoundAsksOnceMoreThenGoodbye() {
+        let second = BreathingConversation.next(after: .askAnotherRound(attempt: 1), .ready(nil))
+        #expect(second == .askAnotherRound(attempt: 2))
+        #expect(BreathingConversation.next(after: second, .ready(nil)) == .goodbye)
+    }
+
     @Test func eventsThatDoNotFitTheStepChangeNothing() {
         #expect(BreathingConversation.next(after: .askFeeling, .ready(.yes)) == .askFeeling)
         #expect(BreathingConversation.next(after: .begin, .feelingHeard) == .begin)
+        #expect(BreathingConversation.next(after: .goodbye, .ready(.yes)) == .goodbye)
     }
 }
 
@@ -1365,8 +1417,6 @@ struct BreathingStreakTests {
         #expect(BreathingStreak.record(state, on: day("2026-12-01"), calendar: calendar).current == 4)
     }
 
-    // Shown on the Breathing screen before a session: a streak still alive today (done today or
-    // yesterday) shows its count; one that has lapsed shows 0.
     @Test func streakShownBeforeASession() {
         let state = BreathingStreak.State(current: 5, longest: 8, totalDays: 12, lastDay: "2026-11-16")
         #expect(BreathingStreak.displayed(state, on: day("2026-11-16"), calendar: calendar) == 5)
@@ -1380,7 +1430,7 @@ struct BreathingStreakTests {
         let six = BreathingStreak.State(current: 6, longest: 6, totalDays: 6, lastDay: "2026-11-16")
         let seven = BreathingStreak.record(six, on: day("2026-11-17"), calendar: calendar)
         #expect(BreathingStreak.newMilestone(before: six, after: seven) == 7)
-        #expect(BreathingStreak.newMilestone(before: seven, after: seven) == nil)        // same-day repeat
+        #expect(BreathingStreak.newMilestone(before: seven, after: seven) == nil)
         #expect(BreathingStreak.highestBadge(for: 16) == 14)
         #expect(BreathingStreak.highestBadge(for: 6) == nil)
     }
@@ -1410,147 +1460,358 @@ struct BreathingStreakTests {
     }
 }
 
-// Breath sensing prototype. The simulator has no motion sensor, so these feed fake samples: the phone's
-// tilt (gravity direction) rises while the user breathes in and falls back while they breathe out.
-// Real accuracy can only be checked on a real iPhone resting on the chest or belly.
-struct BreathDetectorTests {
-
-    /// Samples at 20 Hz over `seconds`, tilting from `from` to `to` degrees about the phone's x axis.
-    static func window(start: Double, seconds: Double = 3, from: Double, to: Double,
-                       accel: Double = 0.005, jitter: Double = 0) -> [BreathMotionSample] {
+// Synthetic chest motion for the breath-sensing tests. The simulator has no motion sensor, so these
+// build fake readings at 20 Hz: the phone's tilt (gravity direction) follows `tilt(t)` in degrees.
+// Real accuracy can only be judged on a real iPhone resting on a real chest.
+enum SyntheticChest {
+    static func samples(start: Double, seconds: Double, accel: Double = 0.003,
+                        tilt: (Double) -> Double) -> [BreathMotionSample] {
         let n = Int(seconds * 20)
         return (0..<n).map { i in
-            let f = Double(i) / Double(max(n - 1, 1))
-            let wobble = jitter * (i.isMultiple(of: 2) ? 1 : -1)
-            let deg = from + (to - from) * f + wobble
-            let r = deg * .pi / 180
-            return BreathMotionSample(time: start + Double(i) / 20, gravity: SIMD3(0, sin(r), -cos(r)), userAcceleration: accel)
+            let t = start + Double(i) / 20
+            let r = tilt(t) * .pi / 180
+            return BreathMotionSample(time: t, gravity: SIMD3(0, sin(r), -cos(r)), userAcceleration: accel)
         }
     }
 
-    @Test func breathingWithTheCircleIsFollowing() {
-        var detector = BreathDetector()
-        for cycle in 0..<2 {
-            let t = Double(cycle) * 12
-            #expect(detector.evaluate(inhale: Self.window(start: t, from: 0, to: 1),
-                                      exhale: Self.window(start: t + 6, from: 1, to: 0)) == .following)
-        }
+    /// Relaxed breathing: `depth` degrees peak to peak, one breath every `period` seconds.
+    static func natural(start: Double = 0, seconds: Double = 8, depth: Double = 0.6, period: Double = 5) -> [BreathMotionSample] {
+        samples(start: start, seconds: seconds) { t in depth * (1 - cos(2 * .pi * (t - start) / period)) / 2 }
     }
 
-    @Test func notMovingIsNotFollowing() {
-        var detector = BreathDetector()
-        #expect(detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 0, jitter: 0.02),
-                                  exhale: Self.window(start: 6, from: 0, to: 0, jitter: 0.02)) == .notFollowing)
+    /// A steady move from `from` to `to` degrees over `seconds` (a guided breath in or out, or a hold).
+    static func ramp(start: Double, seconds: Double = 3, from: Double, to: Double, accel: Double = 0.003) -> [BreathMotionSample] {
+        samples(start: start, seconds: seconds, accel: accel) { t in from + (to - from) * min(1, (t - start) / (seconds - 0.05)) }
     }
 
-    @Test func breathingOutOfStepIsNotFollowing() {
-        var detector = BreathDetector()
-        _ = detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 1), exhale: Self.window(start: 6, from: 1, to: 0))
-        #expect(detector.evaluate(inhale: Self.window(start: 12, from: 0, to: -1),
-                                  exhale: Self.window(start: 18, from: -1, to: 0)) == .notFollowing)
+    /// Lying still apart from tiny fast wobbles (`size` degrees either way).
+    static func still(start: Double, seconds: Double = 3, at level: Double = 0, size: Double = 0.02) -> [BreathMotionSample] {
+        var flip = false
+        return samples(start: start, seconds: seconds) { _ in flip.toggle(); return level + (flip ? size : -size) }
     }
 
-    @Test func holdingTheBreathThroughTheExhaleIsNotFollowing() {
-        var detector = BreathDetector()
-        #expect(detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 1),
-                                  exhale: Self.window(start: 6, from: 1, to: 1)) == .notFollowing)
+    static var profile: BreathProfile? { BreathCalibration.profile(from: natural()) }
+}
+
+// Round 4, item 7: one cycle of natural breathing sets the detector's axis and thresholds.
+struct BreathCalibrationTests {
+
+    @Test func naturalBreathingGivesAProfile() throws {
+        let profile = try #require(BreathCalibration.profile(from: SyntheticChest.natural()))
+        let expected = 0.6 * .pi / 180
+        #expect(abs(profile.amplitude - expected) < expected * 0.2)
+        #expect(abs(profile.axis.y) > 0.95)                     // the tilt was about the phone's x axis
+        #expect(abs(profile.threshold - BreathCalibration.thresholdFraction * profile.amplitude) < 1e-9)
     }
 
-    @Test func tooFewSamplesIsUnknown() {
-        var detector = BreathDetector()
-        #expect(detector.evaluate(inhale: Array(Self.window(start: 0, from: 0, to: 1).prefix(5)), exhale: []) == .unknown)
+    @Test func aDeeperBreatherGetsAHigherThreshold() throws {
+        let shallow = try #require(BreathCalibration.profile(from: SyntheticChest.natural(depth: 0.5)))
+        let deep    = try #require(BreathCalibration.profile(from: SyntheticChest.natural(depth: 2.0)))
+        #expect(deep.threshold > shallow.threshold * 3)
     }
 
-    @Test func aMovingPhoneIsUnknownNotAFailure() {
-        var detector = BreathDetector()
-        #expect(detector.evaluate(inhale: Self.window(start: 0, from: 0, to: 0, accel: 0.2),
-                                  exhale: Self.window(start: 6, from: 0, to: 0, accel: 0.2)) == .unknown)
+    @Test func lyingStillGivesNoProfile() {
+        #expect(BreathCalibration.profile(from: SyntheticChest.still(start: 0, seconds: 8)) == nil)
+    }
+
+    @Test func aPhoneBeingHandledGivesNoProfile() {
+        let handled = SyntheticChest.samples(start: 0, seconds: 8, accel: 0.2) { t in 0.6 * sin(t) }
+        #expect(BreathCalibration.profile(from: handled) == nil)
+    }
+
+    @Test func tooLittleDataGivesNoProfile() {
+        #expect(BreathCalibration.profile(from: SyntheticChest.natural(seconds: 2)) == nil)
     }
 }
 
-// Pause and resume (Joel's bug report, Revision 3): detection must re-arm after EVERY resume. Feeding
-// breathing → stopped → breathing → stopped → breathing must give a pause and a resume each time; a
-// third missed cycle ends gently, so a mis-reading sensor can never loop forever.
+// The live detector: smoothed, with a threshold from calibration, so small movements don't count.
+struct BreathTrackerTests {
+
+    private func feed(_ tracker: inout BreathTracker, _ samples: [BreathMotionSample], learnInhale: Bool = false) -> [Breath] {
+        samples.map { tracker.add($0, learnInhale: learnInhale); return tracker.breath }
+    }
+
+    @Test func aGuidedBreathIsInThenStillThenOut() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        let inhale = feed(&tracker, SyntheticChest.ramp(start: 0, from: 0, to: 1), learnInhale: true)
+        #expect(tracker.inhaleSign != nil)
+        #expect(inhale.contains(.inhaling))
+        #expect(!inhale.contains(.exhaling))
+        let hold = feed(&tracker, SyntheticChest.still(start: 3, at: 1))
+        #expect(hold.last == .still)
+        #expect(!hold.contains(.exhaling))
+        let exhale = feed(&tracker, SyntheticChest.ramp(start: 6, from: 1, to: 0))
+        #expect(exhale.contains(.exhaling))
+        #expect(!exhale.contains(.inhaling))
+    }
+
+    @Test func smallMovementsDoNotCount() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        // Fast wobble plus a slow sway a fifth the size of a natural breath: neither is a breath.
+        let wobble = SyntheticChest.still(start: 0, seconds: 6, size: 0.05)
+        let sway   = SyntheticChest.samples(start: 6, seconds: 6) { t in 0.06 * sin(t - 6) }
+        let seen = feed(&tracker, wobble + sway, learnInhale: true)
+        #expect(seen.allSatisfy { $0 == .still || $0 == .unknown })
+        #expect(tracker.inhaleSign == nil)
+    }
+
+    @Test func theFirstGuidedInhaleSetsWhichWayIsIn() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        // This chest tilts the "other" way when breathing in.
+        let inhale = feed(&tracker, SyntheticChest.ramp(start: 0, from: 0, to: -1), learnInhale: true)
+        #expect(inhale.contains(.inhaling))
+        let exhale = feed(&tracker, SyntheticChest.ramp(start: 3, from: -1, to: 0))
+        #expect(exhale.contains(.exhaling))
+    }
+
+    @Test func movementBeforeTheDirectionIsKnownIsNotYetABreath() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        let seen = feed(&tracker, SyntheticChest.ramp(start: 0, from: 0, to: 1), learnInhale: false)
+        #expect(seen.allSatisfy { $0 == .still || $0 == .unknown })
+        #expect(tracker.movement == .rising)
+    }
+
+    @Test func aPhoneBeingHandledIsUnknown() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        let seen = feed(&tracker, SyntheticChest.ramp(start: 0, from: 0, to: 1, accel: 0.3), learnInhale: true)
+        #expect(seen.last == .unknown)
+        #expect(tracker.movement == .handled)
+        #expect(!seen.contains(.inhaling))
+    }
+}
+
+// Round 4, item 4: the lungs follow the real breath signal, never the timer. They widen while an
+// inhale is seen, narrow on an exhale, and hold still otherwise and while paused.
+struct LungsMotionTests {
+
+    @Test func widenWhileBreathingInUpToFullSize() {
+        var scale = LungsMotion.restScale
+        scale = LungsMotion.next(scale, breath: .inhaling, elapsed: 0.5, paused: false)
+        #expect(scale > LungsMotion.restScale)
+        for _ in 0..<100 { scale = LungsMotion.next(scale, breath: .inhaling, elapsed: 0.05, paused: false) }
+        #expect(scale == LungsMotion.fullScale)
+    }
+
+    @Test func narrowWhileBreathingOutDownToRest() {
+        var scale = LungsMotion.fullScale
+        scale = LungsMotion.next(scale, breath: .exhaling, elapsed: 0.5, paused: false)
+        #expect(scale < LungsMotion.fullScale)
+        for _ in 0..<100 { scale = LungsMotion.next(scale, breath: .exhaling, elapsed: 0.05, paused: false) }
+        #expect(scale == LungsMotion.restScale)
+    }
+
+    @Test func holdStillWhenNoBreathIsSeen() {
+        #expect(LungsMotion.next(1.2, breath: .still, elapsed: 1, paused: false) == 1.2)
+        #expect(LungsMotion.next(1.2, breath: .unknown, elapsed: 1, paused: false) == 1.2)
+    }
+
+    @Test func holdStillWhilePaused() {
+        #expect(LungsMotion.next(1.2, breath: .inhaling, elapsed: 1, paused: true) == 1.2)
+        #expect(LungsMotion.next(1.2, breath: .exhaling, elapsed: 1, paused: true) == 1.2)
+    }
+}
+
+// Round 4, item 6: never skip the breathing. A phase with no breath detected pauses; nothing but Done
+// or a spoken "no" ends the session; the same cycle continues after a pause; the streak counts only
+// when breathing was detected for every cycle.
 struct BreathingCoachTests {
 
-    private enum Breath { case breathing, stopped }
+    private func breatheThroughOneCycle(_ coach: inout BreathingCoach) -> BreathingCoach.Action {
+        _ = coach.phaseEnded(.inhale, breathDetected: true)
+        _ = coach.phaseEnded(.holdAfterInhale, breathDetected: false)
+        _ = coach.phaseEnded(.exhale, breathDetected: true)
+        return coach.phaseEnded(.holdAfterExhale, breathDetected: false)
+    }
 
-    private func verdicts(_ pattern: [Breath]) -> [BreathVerdict] {
-        var detector = BreathDetector()
-        return pattern.enumerated().map { i, breath in
-            let t = Double(i) * 12
-            switch breath {
-            case .breathing: return detector.evaluate(inhale: BreathDetectorTests.window(start: t, from: 0, to: 1),
-                                                      exhale: BreathDetectorTests.window(start: t + 6, from: 1, to: 0))
-            case .stopped:   return detector.evaluate(inhale: BreathDetectorTests.window(start: t, from: 0, to: 0, jitter: 0.02),
-                                                      exhale: BreathDetectorTests.window(start: t + 6, from: 0, to: 0, jitter: 0.02))
+    @Test func fourDetectedCyclesFinishAndCountForTheStreak() {
+        var coach = BreathingCoach()
+        #expect(coach.phaseEnded(.inhale, breathDetected: true) == .nextPhase)
+        #expect(coach.phaseEnded(.holdAfterInhale, breathDetected: false) == .nextPhase)   // holds aren't judged
+        #expect(coach.phaseEnded(.exhale, breathDetected: true) == .nextPhase)
+        #expect(coach.phaseEnded(.holdAfterExhale, breathDetected: false) == .nextCycle)
+        #expect(breatheThroughOneCycle(&coach) == .nextCycle)
+        #expect(breatheThroughOneCycle(&coach) == .nextCycle)
+        #expect(coach.countsForStreak == false)
+        #expect(breatheThroughOneCycle(&coach) == .finished)
+        #expect(coach.countsForStreak)
+    }
+
+    @Test func noBreathPausesAndNeverEnds() {
+        var coach = BreathingCoach()
+        for _ in 0..<20 { #expect(coach.phaseEnded(.inhale, breathDetected: false) == .pause) }
+        #expect(coach.phaseEnded(.exhale, breathDetected: false) == .pause)
+        #expect(coach.completedCycles == 0)
+        #expect(coach.pauses == 21)
+        #expect(coach.countsForStreak == false)
+    }
+
+    @Test func afterAPauseTheSameCycleContinues() {
+        var coach = BreathingCoach()
+        #expect(breatheThroughOneCycle(&coach) == .nextCycle)
+        #expect(coach.phaseEnded(.inhale, breathDetected: true) == .nextPhase)
+        #expect(coach.phaseEnded(.holdAfterInhale, breathDetected: false) == .nextPhase)
+        #expect(coach.phaseEnded(.exhale, breathDetected: false) == .pause)
+        #expect(coach.completedCycles == 1)                       // the paused cycle isn't counted
+        #expect(breatheThroughOneCycle(&coach) == .nextCycle)
+        #expect(coach.completedCycles == 2)
+    }
+
+    // The whole chain on synthetic motion: calibrate, then breathing → stopped → breathing → stopped →
+    // breathing. Each stop pauses; each return to breathing resumes the same cycle; then it finishes.
+    @Test func pauseAndResumeThroughTheRealDetector() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        var coach = BreathingCoach()
+        var t = 0.0
+        var level = 0.0
+        var actions: [BreathingCoach.Action] = []
+
+        func phase(_ p: BreathingPhase, to target: Double) -> BreathingCoach.Action {
+            var watch = BreathPhaseWatch(phase: p, current: tracker.breath)
+            let samples = target == level ? SyntheticChest.still(start: t, at: level)
+                                          : SyntheticChest.ramp(start: t, from: level, to: target)
+            for s in samples {
+                tracker.add(s, learnInhale: p == .inhale)
+                watch.observe(tracker.breath)
             }
+            t += 3; level = target
+            return coach.phaseEnded(p, breathDetected: watch.detected)
+        }
+        func breathingCycle() -> BreathingCoach.Action {
+            _ = phase(.inhale, to: 1); _ = phase(.holdAfterInhale, to: 1)
+            _ = phase(.exhale, to: 0); return phase(.holdAfterExhale, to: 0)
+        }
+        func stoppedInhale() -> BreathingCoach.Action { phase(.inhale, to: 0) }
+
+        actions.append(breathingCycle())
+        actions.append(stoppedInhale())
+        actions.append(breathingCycle())
+        actions.append(stoppedInhale())
+        actions.append(breathingCycle())
+        actions.append(breathingCycle())
+        #expect(actions == [.nextCycle, .pause, .nextCycle, .pause, .nextCycle, .finished])
+        #expect(coach.pauses == 2)
+        #expect(coach.countsForStreak)
+    }
+}
+
+// A phase is "detected" once the matching breath is seen at any moment during it, including a breath
+// already under way when the phase starts (a resume after a pause starts on the user's own inhale).
+struct BreathPhaseWatchTests {
+
+    @Test func inhaleSeenDuringThePhase() {
+        var watch = BreathPhaseWatch(phase: .inhale, current: .still)
+        #expect(watch.detected == false)
+        watch.observe(.exhaling)
+        #expect(watch.detected == false)
+        watch.observe(.inhaling)
+        watch.observe(.still)
+        #expect(watch.detected)
+    }
+
+    @Test func aBreathAlreadyUnderWayCounts() {
+        #expect(BreathPhaseWatch(phase: .inhale, current: .inhaling).detected)
+        #expect(BreathPhaseWatch(phase: .exhale, current: .inhaling).detected == false)
+    }
+
+    @Test func holdsNeedNothing() {
+        #expect(BreathPhaseWatch(phase: .holdAfterInhale, current: .still).detected == false)
+    }
+}
+
+// Round 4, item 8: Sign in with Apple. Only the Apple user identifier and the first name are kept, on
+// the device, under their own keys. Apple sends the name only the first time, so a later sign-in
+// without one keeps the name already saved.
+struct AppleAccountTests {
+
+    private func withDefaults(_ body: (UserDefaults, String) throws -> Void) throws {
+        let suite = "apple-account-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try body(defaults, suite)
+    }
+
+    @Test func savesOnlyTheUserIDAndFirstNameUnderNewKeys() throws {
+        try withDefaults { defaults, suite in
+            AppleAccount.save(userID: "001234.abc", givenName: "Sam", to: defaults)
+            #expect(AppleAccount.userID(in: defaults) == "001234.abc")
+            #expect(AppleAccount.givenName(in: defaults) == "Sam")
+            let written = defaults.persistentDomain(forName: suite)?.keys.sorted() ?? []
+            #expect(written == ["appleSignInGivenName", "appleSignInUserID"])
         }
     }
 
-    @Test func detectionReArmsAfterEveryResume() {
-        let seen = verdicts([.breathing, .stopped, .breathing, .stopped, .breathing])
-        #expect(seen == [.following, .notFollowing, .following, .notFollowing, .following])
-
-        var coach = BreathingCoach()
-        let actions = seen.map { coach.record($0) }
-        #expect(actions == [.nextCycle, .tryAgain, .nextCycle, .tryAgain, .nextCycle])
-        #expect(coach.completedCycles == 3)
-        #expect(coach.missedCycles == 2)
-        #expect(coach.record(.following) == .finished)        // the fourth followed cycle completes it
+    @Test func aLaterSignInWithoutANameKeepsTheSavedName() throws {
+        try withDefaults { defaults, _ in
+            AppleAccount.save(userID: "001234.abc", givenName: "Sam", to: defaults)
+            AppleAccount.save(userID: "001234.abc", givenName: nil, to: defaults)
+            #expect(AppleAccount.givenName(in: defaults) == "Sam")
+        }
     }
 
-    @Test func threeMissedCyclesEndGently() {
-        var coach = BreathingCoach()
-        #expect(coach.record(.notFollowing) == .tryAgain)
-        #expect(coach.record(.notFollowing) == .tryAgain)
-        #expect(coach.record(.notFollowing) == .endGently)
-        #expect(BreathingCoach.maximumMisses == 3)
+    @Test func aDifferentAppleIDDoesNotInheritTheOldName() throws {
+        try withDefaults { defaults, _ in
+            AppleAccount.save(userID: "001234.abc", givenName: "Sam", to: defaults)
+            AppleAccount.save(userID: "009999.xyz", givenName: nil, to: defaults)
+            #expect(AppleAccount.userID(in: defaults) == "009999.xyz")
+            #expect(AppleAccount.givenName(in: defaults) == nil)
+        }
     }
 
-    // No motion data (simulator, phone moved) never blocks: the cycle counts and the timer continues.
-    @Test func unknownNeverBlocks() {
-        var coach = BreathingCoach()
-        let actions = (0..<4).map { _ in coach.record(.unknown) }
-        #expect(actions == [.nextCycle, .nextCycle, .nextCycle, .finished])
+    @Test func blankNamesAreNotNames() throws {
+        try withDefaults { defaults, _ in
+            AppleAccount.save(userID: "001234.abc", givenName: "   ", to: defaults)
+            #expect(AppleAccount.givenName(in: defaults) == nil)
+            #expect(BreathingCueScript.opening(name: AppleAccount.givenName(in: defaults)).hasPrefix("Hi there,"))
+        }
+    }
+
+    @Test func signOutRemovesOnlyItsOwnKeys() throws {
+        try withDefaults { defaults, suite in
+            defaults.set(5, forKey: "breathingStreakCurrent")
+            AppleAccount.save(userID: "001234.abc", givenName: "Sam", to: defaults)
+            AppleAccount.signOut(from: defaults)
+            #expect(AppleAccount.userID(in: defaults) == nil)
+            #expect(AppleAccount.givenName(in: defaults) == nil)
+            #expect(defaults.persistentDomain(forName: suite)?.keys.sorted() == ["breathingStreakCurrent"])
+        }
     }
 }
 
 #if DEBUG
-// Simulator-only overrides (compiled out of Release): stand-in answers for the listening steps and
-// stand-in breath verdicts, because the simulator has no real microphone input or motion sensor.
+// Simulator-only stand-ins (compiled out of Release): spoken answers in order, and a fake chest that
+// breathes along (or stays still) for each guided inhale, because the simulator has no microphone
+// input or motion sensor.
 struct BreathingDebugTests {
 
-    @Test func readsStandInAnswers() {
-        #expect(BreathingDebug.answer(from: "yes") == .yes)
-        #expect(BreathingDebug.answer(from: "no") == .no)
-        #expect(BreathingDebug.answer(from: "silent") == nil)
+    @Test func readsStandInAnswersInOrder() {
+        #expect(BreathingDebug.answers(from: "fine, yes,no") == ["fine", "yes", "no"])
+        #expect(BreathingDebug.answers(from: nil) == [])
     }
 
-    @Test func readsStandInVerdicts() {
-        #expect(BreathingDebug.verdicts(from: "miss,follow,unknown") == [.notFollowing, .following, .unknown])
-        #expect(BreathingDebug.verdicts(from: nil) == [])
+    @Test func readsTheFakeChestPlan() {
+        #expect(BreathingDebug.inhalePlan(from: "follow,still,follow") == [true, false, true])
+        #expect(BreathingDebug.inhalePlan(from: nil) == [])
     }
 }
 #endif
 
-// At full size (scale 1.5) the visual spills a quarter of its size past its frame on each side; the
-// layout must reserve that room or it covers the "Box Breathing" heading. On short screens (iPhone SE)
-// it shrinks so the heading, description, status lines and controls all fit.
+// The lungs widen to 1.5x their frame; the layout reserves that room so they never cover the "Box
+// Breathing" heading. On short screens (iPhone SE) they shrink so everything fits.
 struct BreathingLayoutTests {
 
     @Test func reservesRoomForTheFullSizeVisual() {
         #expect(BreathingLayout.maxScale == 1.5)
+        #expect(BreathingLayout.maxScale == LungsMotion.fullScale)
         #expect(BreathingLayout.overflow(for: 220) == 55)
     }
 
     @Test func tallScreensKeepTheOriginal220ptSize() {
-        #expect(BreathingLayout.circleSize(forHeight: 760) == 220)   // iPhone 17 Pro Max sheet
+        #expect(BreathingLayout.circleSize(forHeight: 760) == 220)
         #expect(BreathingLayout.circleSize(forHeight: 2000) == 220)
     }
 
     @Test func shortScreensShrinkSoEverythingFits() {
-        let seHeight: CGFloat = 529                                   // iPhone SE sheet, inside padding
+        let seHeight: CGFloat = 529
         let size = BreathingLayout.circleSize(forHeight: seHeight)
         #expect(size < 220)
         #expect(size * BreathingLayout.maxScale + BreathingLayout.otherContentHeight <= seHeight)

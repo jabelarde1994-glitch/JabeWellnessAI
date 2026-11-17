@@ -15,6 +15,7 @@ import AVFoundation
 import CoreMotion
 import StoreKit
 import Security
+import AuthenticationServices
 
 //*======================================================================*//
 // MARK: - Secrets
@@ -2083,6 +2084,10 @@ struct SettingsView: View {
     @AppStorage("reminderEnabled")       private var reminderEnabled       = false
     @State private var reminderTime      = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
     @State private var showClearConfirm  = false
+    @AppStorage(AppleAccount.userIDKey)    private var appleUserID    = ""
+    @AppStorage(AppleAccount.givenNameKey) private var appleGivenName = ""
+    @State private var signInMessage: String?
+    @Environment(\.colorScheme) private var colorScheme
 
     /// Read from the bundle rather than hardcoded — the old literal "1.0.0" was already wrong
     /// against MARKETING_VERSION 1.0, and would have kept claiming 1.0.0 after every version bump.
@@ -2126,6 +2131,34 @@ struct SettingsView: View {
                     }
                 }
 
+                // Optional Sign in with Apple: only the Apple user ID and first name, kept on this device,
+                // so the breathing coach can greet you by name. No server call.
+                Section {
+                    if appleUserID.isEmpty {
+                        SignInWithAppleButton(.signIn) { request in
+                            request.requestedScopes = [.fullName]
+                        } onCompletion: { result in
+                            signInMessage = AppleSignIn.handle(result)
+                        }
+                        .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+                        .frame(height: 44)
+                        .accessibilityIdentifier("signInWithApple")
+                    } else {
+                        LabeledContent("Signed in with Apple", value: appleGivenName)
+                        Button("Sign Out", role: .destructive) {
+                            AppleAccount.signOut()
+                            signInMessage = nil
+                        }
+                    }
+                    if let signInMessage {
+                        Text(signInMessage).font(.caption).foregroundColor(.secondary)
+                    }
+                } header: {
+                    Text("Account")
+                } footer: {
+                    Text("Optional. Lets your breathing coach greet you by your first name. Only your Apple sign-in ID and first name are kept, on this iPhone. Nothing is sent to Jabe.")
+                }
+
                 Section("Appearance") {
                     Picker("Theme", selection: $colorSchemePreference) {
                         Text("System").tag("system")
@@ -2163,6 +2196,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .task { await AppleSignIn.refreshCredentialState() }
             .alert("Clear Chat History?", isPresented: $showClearConfirm) {
                 Button("Clear", role: .destructive) {
                     storage.clearAllSessions()
@@ -2486,8 +2520,8 @@ struct GuidedExercisesView: View {
 
 // MARK: Breathing Voice Guide
 
-/// The four box-breathing phases, in order. Drives both the lungs and the spoken cues, so the
-/// voice and the screen can never disagree about what the user should be doing.
+/// The four box-breathing phases, in order. They set the rhythm of Alex's voice; the lungs follow the
+/// user's real breathing (BreathTracker), never this timer.
 nonisolated enum BreathingPhase: CaseIterable {
     case inhale, holdAfterInhale, exhale, holdAfterExhale
 
@@ -2499,10 +2533,12 @@ nonisolated enum BreathingPhase: CaseIterable {
         }
     }
 
-    var targetScale: CGFloat {
+    /// The breath the user should be making. Holds are not checked against the sensor.
+    var expectedBreath: Breath? {
         switch self {
-        case .inhale, .holdAfterInhale: return 1.5
-        case .exhale, .holdAfterExhale: return 1.0
+        case .inhale:                            return .inhaling
+        case .exhale:                            return .exhaling
+        case .holdAfterInhale, .holdAfterExhale: return nil
         }
     }
 
@@ -2510,9 +2546,8 @@ nonisolated enum BreathingPhase: CaseIterable {
     var seconds: Int { 3 }
 }
 
-/// Everything Alex says, and how. One short, natural line per phase ("Breathe in… two… three."): the
-/// ellipses give the voice room to breathe, and the next phase's line cuts off anything left over, so
-/// speech never drifts behind the lungs.
+/// Everything Alex says, and how (round 4: warm, chat-like wording; Apple's normal speed with a little
+/// more energy; commas instead of ellipses so there are no long gaps inside a phrase).
 nonisolated enum BreathingCueScript {
     static let cycles = 4
     static var cycleSeconds: Int { BreathingPhase.allCases.reduce(0) { $0 + $1.seconds } }
@@ -2520,20 +2555,73 @@ nonisolated enum BreathingCueScript {
         BreathingPhase.allCases.map { "\($0.label) \($0.seconds)s" }.joined(separator: " · ")
     }
 
-    static let coachName       = "Alex"
-    static let opening         = "Hi there, I'm Alex, your breathing coach. How are you feeling right now?"
-    static let thanks          = "Thank you for sharing."
-    static let readyQuestion   = "Are you ready to begin?"
-    static let letsBegin       = "Great. Nice and slow."
-    static let declined        = "No problem. Whenever you're ready, come back."
-    static let tryAgain        = "Let's try that again. Breathe in with the circle."
-    static let tooManyMisses   = "Take your time. We can try again whenever you like."
-    static let congratulations = "Congratulations, you've completed your breathing for today. See you again tomorrow."
+    static let coachName = "Alex"
 
-    // Calm and conversational: a little slower than the 0.5 default, pitch left at 1.0.
+    /// "Hi Sam, …" with the first name from Sign in with Apple, otherwise "Hi there, …".
+    static func opening(name: String?) -> String {
+        let first = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let hello = first.isEmpty ? "Hi there" : "Hi \(first)"
+        return "\(hello), I'm Alex, your breathing coach. It's so nice to see you. How are you feeling right now?"
+    }
+
+    static let thanks            = "Thank you for sharing that with me."
+    static let readyQuestion     = "Are you ready to breathe together?"
+    static let readyAgain        = "Take your time. Just say yes when you'd like to begin."
+    static let declined          = "That's completely okay. I'll be right here whenever you'd like to breathe together."
+    static let settle            = "Let's get comfortable first. Rest your phone gently on your chest."
+    static let calibrate         = "Now breathe in and out naturally, and I'll follow along with you."
+    static let calibrateAgain    = "I couldn't quite feel your breathing yet, and that's okay. Let's try once more. Breathe in and out naturally, with your phone resting on your chest."
+    static let letsBegin         = "Lovely, I can feel your breathing. Let's take a slow breath in together."
+    static let pause             = "Let's rest for a moment. Breathe in with me whenever you're ready, and we'll continue from here."
+    static let congratulations   = "Wonderful, you've completed your breathing for today. Thank you for taking this time for yourself."
+    static let anotherRound      = "Would you like to do another round?"
+    static let anotherRoundAgain = "Just say yes if you'd like another round, or no if you're all done."
+    static let goAgain           = "Lovely, let's go again together."
+    static let goodbye           = "That's okay. Thank you for breathing with me today. See you again tomorrow."
+    static let noMotionSensor    = "I can't feel your breathing on this device, so we can't breathe together here yet."
+
+    /// On screen only, while paused.
+    static let pauseTip = "Tip: rest your phone flat on your chest or belly."
+
+    /// Round 4, item 2: no "I'm ready" button. If Alex can't listen, she says why.
+    static func cannotHear(permissionRefused: Bool) -> String {
+        permissionRefused
+            ? "I'd love to hear you, but I can't use the microphone yet. Please allow Microphone and Speech Recognition for Jabe Wellness in Settings, then open Breathing again."
+            : "I can't hear you right now. Please check your connection, then open Breathing again in a little while."
+    }
+
+    static func cue(for phase: BreathingPhase) -> String {
+        switch phase {
+        case .inhale:          return "Breathe in, two, three."
+        case .holdAfterInhale: return "Gently hold, two, three."
+        case .exhale:          return "Now breathe out, two, three."
+        case .holdAfterExhale: return "And hold, two, three."
+        }
+    }
+
+    /// Every line Alex can say, for the tests and the task log.
+    static func allSpokenLines(name: String?) -> [String] {
+        [opening(name: name), opening(name: nil), thanks, readyQuestion, readyAgain, declined, settle, calibrate,
+         calibrateAgain, letsBegin, pause, congratulations, anotherRound, anotherRoundAgain, goAgain, goodbye,
+         noMotionSensor, cannotHear(permissionRefused: true), cannotHear(permissionRefused: false)]
+            + BreathingPhase.allCases.map(cue(for:))
+    }
+
+    // Round 4, item 1: Apple's normal speed (AVSpeechUtteranceDefaultSpeechRate = 0.5), pitch up 5%.
     static let voiceLanguage = "en-US"
-    static let voiceRate:  Float = 0.42
-    static let voicePitch: Float = 1.0
+    static let voiceRate:  Float = 0.5
+    static let voicePitch: Float = 1.05
+
+    /// Every line is spoken with these settings and no extra silence before or after it.
+    static func utterance(_ text: String, voice: AVSpeechSynthesisVoice?) -> AVSpeechUtterance {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice              = voice
+        utterance.rate               = voiceRate
+        utterance.pitchMultiplier    = voicePitch
+        utterance.preUtteranceDelay  = 0
+        utterance.postUtteranceDelay = 0
+        return utterance
+    }
 
     /// How long Alex listens for an answer.
     static let listenSeconds: Double = 8
@@ -2541,19 +2629,13 @@ nonisolated enum BreathingCueScript {
     static let answerSettleSeconds: Double = 1.5
     /// With the voice off, how long each spoken line stays on screen before the next step.
     static let readingSeconds: Double = 2.5
-
-    static func cue(for phase: BreathingPhase) -> String {
-        switch phase {
-        case .inhale:                            return "Breathe in… two… three."
-        case .holdAfterInhale, .holdAfterExhale: return "Hold… two… three."
-        case .exhale:                            return "Breathe out… two… three."
-        }
-    }
 }
 
-/// The talk before the exercise. Alex asks how you feel (the answer is never stored or read; it is only
-/// used to know you've finished speaking), thanks you if you said something, then asks if you're ready.
-/// Yes starts; no ends gently; no answer asks once more, then ends gently.
+/// The talk around the exercise. Before: Alex asks how you feel (the answer is never stored or read;
+/// it is only used to know you've finished speaking), thanks you if you said something, then asks if
+/// you're ready. Yes starts; no ends gently; no answer asks once more, then ends gently.
+/// After a finished session: "Would you like to do another round?" Yes goes again; no says goodbye;
+/// no answer asks once more, then goodbye.
 nonisolated enum BreathingConversation {
 
     nonisolated enum Step: Equatable {
@@ -2561,15 +2643,19 @@ nonisolated enum BreathingConversation {
         case askReady(attempt: Int, thankFirst: Bool)
         case begin
         case endGently
+        case askAnotherRound(attempt: Int)
+        case goAgain
+        case goodbye
     }
 
     nonisolated enum Event {
         case feelingHeard, feelingSilent
-        case ready(ReadyAnswer?)            // nil = no answer
+        case ready(ReadyAnswer?)            // a yes/no answer; nil = no answer
     }
 
-    static let firstStep = Step.askFeeling
-    static let maximumReadyAttempts = 2
+    static let firstStep    = Step.askFeeling
+    static let afterSession = Step.askAnotherRound(attempt: 1)
+    static let maximumAttempts = 2
 
     static func next(after step: Step, _ event: Event) -> Step {
         switch (step, event) {
@@ -2578,14 +2664,18 @@ nonisolated enum BreathingConversation {
         case (.askReady, .ready(.some(.yes))): return .begin
         case (.askReady, .ready(.some(.no))):  return .endGently
         case (.askReady(let attempt, _), .ready(.none)):
-            return attempt < maximumReadyAttempts ? .askReady(attempt: attempt + 1, thankFirst: false) : .endGently
+            return attempt < maximumAttempts ? .askReady(attempt: attempt + 1, thankFirst: false) : .endGently
+        case (.askAnotherRound, .ready(.some(.yes))): return .goAgain
+        case (.askAnotherRound, .ready(.some(.no))):  return .goodbye
+        case (.askAnotherRound(let attempt), .ready(.none)):
+            return attempt < maximumAttempts ? .askAnotherRound(attempt: attempt + 1) : .goodbye
         default:
             return step
         }
     }
 }
 
-/// The spoken answer to "Are you ready to begin?". Whole words only, any case; a "no" word wins, so
+/// The spoken answer to "Are you ready…?" and "another round?". Whole words only, any case; a "no" word wins, so
 /// "I'm not ready" is never read as yes, and "yesterday" is not "yes".
 nonisolated enum ReadyAnswer: Equatable {
     case yes, no
@@ -2604,27 +2694,28 @@ nonisolated enum ReadyAnswer: Equatable {
     }
 }
 
-/// The exercise itself: what to do after each cycle. A missed cycle is retried ("Let's try that
-/// again…"); detection re-arms after every retry; the third miss ends gently so it can never loop.
-/// "Unknown" (no motion data, phone moving) never blocks: the cycle counts and the timer continues.
+/// The exercise, phase by phase (round 4, item 6: never skip the breathing). A breathing phase with no
+/// breath detected pauses the session; it never ends it. Only Done or a spoken "no" ends a session.
+/// After a pause the same cycle runs again. A cycle counts only when both its breaths were detected,
+/// so finishing all cycles is the only way the streak counts.
 nonisolated struct BreathingCoach {
-    static let maximumMisses = 3
 
-    nonisolated enum Action: Equatable { case nextCycle, tryAgain, endGently, finished }
+    nonisolated enum Action: Equatable { case nextPhase, pause, nextCycle, finished }
 
     private(set) var completedCycles = 0
-    private(set) var missedCycles    = 0
+    private(set) var pauses          = 0
 
-    mutating func record(_ verdict: BreathVerdict) -> Action {
-        switch verdict {
-        case .notFollowing:
-            missedCycles += 1
-            return missedCycles >= Self.maximumMisses ? .endGently : .tryAgain
-        case .following, .unknown:
-            completedCycles += 1
-            return completedCycles >= BreathingCueScript.cycles ? .finished : .nextCycle
+    mutating func phaseEnded(_ phase: BreathingPhase, breathDetected: Bool) -> Action {
+        if phase.expectedBreath != nil && !breathDetected {
+            pauses += 1
+            return .pause
         }
+        guard phase == .holdAfterExhale else { return .nextPhase }
+        completedCycles += 1
+        return completedCycles >= BreathingCueScript.cycles ? .finished : .nextCycle
     }
+
+    var countsForStreak: Bool { completedCycles >= BreathingCueScript.cycles }
 }
 
 /// The voice choice on the breathing screen, remembered on the device. Alex (the coach, a female
@@ -2804,66 +2895,298 @@ nonisolated struct BreathMotionSample {
     let userAcceleration: Double         // g; near 0 when the phone is resting
 }
 
-nonisolated enum BreathVerdict: Equatable { case following, notFollowing, unknown }
+/// Which way the smoothed tilt is moving along the breathing axis; `handled` = the phone is being moved.
+nonisolated enum BreathMovement: Equatable { case rising, falling, still, handled }
 
-/// PROTOTYPE breath sensing. With the phone resting on the chest or belly, breathing in tilts it one
-/// way and breathing out tilts it back. The first cycle with a clear movement sets which tilt direction
-/// means "in"; each cycle must then tilt that way during the inhale and back during the exhale. Each
-/// call judges one cycle on its own data, so it is re-armed for every cycle, including retries. Unknown
-/// (never a failure) when there is too little data or the phone is being moved. The thresholds are
-/// educated guesses: they have only been checked against synthetic samples, never on a real chest.
-nonisolated struct BreathDetector {
-    static let minimumSwingDegrees = 0.2
-    static let maximumMovement     = 0.03     // average g of user acceleration; above this the phone is handled
-    static let minimumSamples      = 15       // per phase window (20 Hz × 3 s = 60 expected)
+/// What the detector believes the user is doing right now. `unknown` = phone handled, or the direction
+/// of "in" is not known yet.
+nonisolated enum Breath: Equatable { case inhaling, exhaling, still, unknown }
 
-    private(set) var axis: SIMD3<Double>?
+/// Set by calibration: the tilt direction breathing moves along, the size of one natural breath, and how
+/// far the smoothed signal must move before it counts as a breath (so small movements don't count).
+nonisolated struct BreathProfile: Equatable {
+    let axis: SIMD3<Double>
+    let amplitude: Double
+    let threshold: Double
+}
 
-    mutating func evaluate(inhale: [BreathMotionSample], exhale: [BreathMotionSample]) -> BreathVerdict {
-        guard inhale.count >= Self.minimumSamples, exhale.count >= Self.minimumSamples else { return .unknown }
-        let all = inhale + exhale
-        let movement = all.reduce(0) { $0 + $1.userAcceleration } / Double(all.count)
-        guard movement <= Self.maximumMovement else { return .unknown }
+nonisolated enum BreathMath {
+    /// Exponential smoothing weight for a step of `dt` seconds with time constant `tau`.
+    static func alpha(dt: Double, tau: Double) -> Double { dt <= 0 ? 0 : 1 - exp(-dt / tau) }
+    static func length(_ v: SIMD3<Double>) -> Double { (v * v).sum().squareRoot() }
+}
 
-        let minimumSwing = Self.minimumSwingDegrees * .pi / 180     // gravity moves ~1 rad per radian of tilt
-        let rise = Self.mean(inhale.suffix(5)) - Self.mean(inhale.prefix(5))
-        let fall = Self.mean(exhale.suffix(5)) - Self.mean(exhale.prefix(5))
+/// Round 4, item 7: Alex says "breathe in and out naturally" and the detector learns from that one
+/// natural cycle. The breathing axis is the main direction the (smoothed) tilt moves in; the threshold
+/// is 30% of one natural breath, and never less than three times the sensor's jitter.
+/// APPROXIMATE: checked only against synthetic signals; real accuracy is known only on a real iPhone.
+nonisolated enum BreathCalibration {
+    static let seconds: Double     = 8          // one natural breath takes about 3 to 6 s
+    static let minimumSamples      = 80         // 4 s at 20 Hz
+    static let thresholdFraction   = 0.3
+    static let minimumAmplitude    = 0.1 * Double.pi / 180      // 0.1° of tilt
+    static let minimumThreshold    = 0.03 * Double.pi / 180
+    static let maximumMovement     = 0.04       // average g of user acceleration; above this the phone is handled
+    static let smoothingSeconds    = 0.4
 
-        if axis == nil {
-            let size = (rise * rise).sum().squareRoot()
-            guard size >= minimumSwing else { return .notFollowing }
-            axis = rise / size
+    static func profile(from samples: [BreathMotionSample]) -> BreathProfile? {
+        guard samples.count >= minimumSamples, let first = samples.first else { return nil }
+        let movement = samples.reduce(0) { $0 + $1.userAcceleration } / Double(samples.count)
+        guard movement <= maximumMovement else { return nil }
+
+        var smoothed: [SIMD3<Double>] = []
+        var current = first.gravity
+        var lastTime = first.time
+        for sample in samples {
+            current += (sample.gravity - current) * BreathMath.alpha(dt: sample.time - lastTime, tau: smoothingSeconds)
+            lastTime = sample.time
+            smoothed.append(current)
         }
-        guard let axis else { return .unknown }
-        let inSwing  = (rise * axis).sum()
-        let outSwing = (fall * axis).sum()
-        return inSwing >= minimumSwing && outSwing <= -0.6 * minimumSwing ? .following : .notFollowing
+        guard let axis = principalAxis(smoothed) else { return nil }
+
+        let level = smoothed.map { ($0 * axis).sum() }
+        let amplitude = (level.max() ?? 0) - (level.min() ?? 0)
+
+        // Sensor jitter from the raw readings' second differences (a slow breath barely changes them).
+        let raw = samples.map { ($0.gravity * axis).sum() }
+        var sumOfSquares = 0.0
+        for i in 2..<raw.count {
+            let d = raw[i] - 2 * raw[i - 1] + raw[i - 2]
+            sumOfSquares += d * d
+        }
+        let jitter = (sumOfSquares / Double(raw.count - 2)).squareRoot() / 6.0.squareRoot()
+
+        guard amplitude >= minimumAmplitude, amplitude >= 4 * jitter else { return nil }
+        let threshold = max(thresholdFraction * amplitude, 3 * jitter, minimumThreshold)
+        return BreathProfile(axis: axis, amplitude: amplitude, threshold: threshold)
     }
 
-    private static func mean<S: Collection>(_ samples: S) -> SIMD3<Double> where S.Element == BreathMotionSample {
-        samples.reduce(SIMD3<Double>.zero) { $0 + $1.gravity } / Double(max(samples.count, 1))
+    /// The direction the points spread along most (power iteration), signed so its largest part is positive.
+    private static func principalAxis(_ points: [SIMD3<Double>]) -> SIMD3<Double>? {
+        guard !points.isEmpty else { return nil }
+        let mean = points.reduce(SIMD3<Double>.zero, +) / Double(points.count)
+        let deviations = points.map { $0 - mean }
+        guard var axis = deviations.max(by: { BreathMath.length($0) < BreathMath.length($1) }),
+              BreathMath.length(axis) > 1e-12 else { return nil }
+        axis /= BreathMath.length(axis)
+        for _ in 0..<25 {
+            var next = SIMD3<Double>.zero
+            for d in deviations { next += d * (d * axis).sum() }
+            let size = BreathMath.length(next)
+            guard size > 1e-20 else { return nil }
+            axis = next / size
+        }
+        let largest = [axis.x, axis.y, axis.z].max { abs($0) < abs($1) } ?? 1
+        return largest < 0 ? -axis : axis
+    }
+}
+
+/// The live breath detector, fed 20 readings a second. The tilt along the calibrated axis is smoothed
+/// (0.4 s), and a breath is only seen once it has moved by the calibrated threshold from its last
+/// turning point; small wobbles and slow drifts below that never count. No new progress for 0.8 s
+/// means still (a hold). The first guided inhale sets which direction means "in".
+/// APPROXIMATE: a phone resting on a chest; real accuracy is known only on a real iPhone.
+nonisolated struct BreathTracker {
+    static let smoothingSeconds    = 0.4
+    static let stillAfterSeconds   = 0.8
+    static let handledAcceleration = 0.06      // smoothed g; above this the phone is being moved
+    static let accelerationSmoothingSeconds = 0.3
+
+    let profile: BreathProfile
+    private(set) var inhaleSign: Int?
+    private(set) var movement = BreathMovement.still
+
+    private var level: Double?
+    private var acceleration: Double?
+    private var lastTime: TimeInterval?
+    private var direction = 0
+    private var extreme = 0.0
+    private var progressMark = 0.0
+    private var lastProgress: TimeInterval = 0
+    private var low = 0.0
+    private var high = 0.0
+
+    init(profile: BreathProfile, inhaleSign: Int? = nil) {
+        self.profile = profile
+        self.inhaleSign = inhaleSign
+    }
+
+    var breath: Breath {
+        switch movement {
+        case .still:   return .still
+        case .handled: return .unknown
+        case .rising, .falling:
+            guard let inhaleSign else { return .unknown }
+            return (movement == .rising ? 1 : -1) == inhaleSign ? .inhaling : .exhaling
+        }
+    }
+
+    /// `learnInhale`: true during a guided inhale; the first clear movement then defines "in".
+    mutating func add(_ sample: BreathMotionSample, learnInhale: Bool) {
+        let dt = lastTime.map { max(0, sample.time - $0) } ?? 0
+        lastTime = sample.time
+        let x = (sample.gravity * profile.axis).sum()
+        let current = level.map { $0 + (x - $0) * BreathMath.alpha(dt: dt, tau: Self.smoothingSeconds) } ?? x
+        let isFirst = level == nil
+        level = current
+        let shake = acceleration.map {
+            $0 + (sample.userAcceleration - $0) * BreathMath.alpha(dt: dt, tau: Self.accelerationSmoothingSeconds)
+        } ?? sample.userAcceleration
+        acceleration = shake
+
+        if isFirst { becomeStill(at: current) }
+        guard shake <= Self.handledAcceleration else {
+            becomeStill(at: current)
+            movement = .handled
+            return
+        }
+
+        let threshold = profile.threshold
+        switch direction {
+        case 1:
+            extreme = max(extreme, current)
+            if current >= progressMark + 0.1 * threshold { progressMark = current; lastProgress = sample.time }
+            if extreme - current >= threshold { turn(-1, at: current, time: sample.time) }
+            else if sample.time - lastProgress > Self.stillAfterSeconds { becomeStill(at: current) }
+        case -1:
+            extreme = min(extreme, current)
+            if current <= progressMark - 0.1 * threshold { progressMark = current; lastProgress = sample.time }
+            if current - extreme >= threshold { turn(1, at: current, time: sample.time) }
+            else if sample.time - lastProgress > Self.stillAfterSeconds { becomeStill(at: current) }
+        default:
+            low  = min(low, current)
+            high = max(high, current)
+            if current - low >= threshold { turn(1, at: current, time: sample.time) }
+            else if high - current >= threshold { turn(-1, at: current, time: sample.time) }
+        }
+        movement = direction == 1 ? .rising : direction == -1 ? .falling : .still
+        if learnInhale, inhaleSign == nil, direction != 0 { inhaleSign = direction }
+    }
+
+    private mutating func turn(_ newDirection: Int, at x: Double, time: TimeInterval) {
+        direction    = newDirection
+        extreme      = x
+        progressMark = x
+        lastProgress = time
+    }
+
+    private mutating func becomeStill(at x: Double) {
+        direction = 0
+        low  = x
+        high = x
+    }
+}
+
+/// Whether the breath a phase asks for was seen at any moment during it, including a breath already
+/// under way when the phase started (a resume after a pause starts on the user's own inhale).
+nonisolated struct BreathPhaseWatch {
+    let phase: BreathingPhase
+    private(set) var detected: Bool
+
+    init(phase: BreathingPhase, current: Breath) {
+        self.phase = phase
+        detected = phase.expectedBreath.map { $0 == current } ?? false
+    }
+
+    mutating func observe(_ breath: Breath) {
+        if let expected = phase.expectedBreath, breath == expected { detected = true }
+    }
+}
+
+/// Round 4, item 4: the lungs follow the detector, not the timer. They widen while an inhale is seen,
+/// narrow on an exhale, and hold still otherwise and while the exercise is paused.
+nonisolated enum LungsMotion {
+    static let restScale: CGFloat = 1.0
+    static let fullScale: CGFloat = 1.5
+    static let secondsRestToFull  = 2.5
+
+    static func next(_ scale: CGFloat, breath: Breath, elapsed: Double, paused: Bool) -> CGFloat {
+        guard !paused else { return scale }
+        let step = CGFloat(max(0, elapsed) / secondsRestToFull) * (fullScale - restScale)
+        switch breath {
+        case .inhaling:          return min(fullScale, scale + step)
+        case .exhaling:          return max(restScale, scale - step)
+        case .still, .unknown:   return scale
+        }
+    }
+}
+
+/// Round 4, item 8: Sign in with Apple. Only the Apple user identifier and the first name are kept, on
+/// this device, under their own two keys; nothing is sent to Jabe. Apple sends the name only on the
+/// first sign-in, so a later sign-in without one keeps the saved name (for the same Apple ID only).
+nonisolated enum AppleAccount {
+    static let userIDKey    = "appleSignInUserID"
+    static let givenNameKey = "appleSignInGivenName"
+
+    static func userID(in defaults: UserDefaults = .standard) -> String? {
+        defaults.string(forKey: userIDKey).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    static func givenName(in defaults: UserDefaults = .standard) -> String? {
+        let name = defaults.string(forKey: givenNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
+    static func save(userID: String, givenName: String?, to defaults: UserDefaults = .standard) {
+        let name = givenName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sameUser = defaults.string(forKey: userIDKey) == userID
+        defaults.set(userID, forKey: userIDKey)
+        if !name.isEmpty { defaults.set(name, forKey: givenNameKey) }
+        else if !sameUser { defaults.removeObject(forKey: givenNameKey) }
+    }
+
+    static func signOut(from defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: userIDKey)
+        defaults.removeObject(forKey: givenNameKey)
+    }
+}
+
+/// The calls to Apple's Sign in with Apple service (AuthenticationServices). No Jabe server is involved.
+enum AppleSignIn {
+
+    /// Forgets the saved account if the user has stopped using Sign in with Apple for this app
+    /// (Settings → Apple ID → Sign in with Apple). Only an explicit "revoked" clears it.
+    static func refreshCredentialState() async {
+        guard let id = AppleAccount.userID() else { return }
+        let state = try? await ASAuthorizationAppleIDProvider().credentialState(forUserID: id)
+        if state == .revoked { AppleAccount.signOut() }
+    }
+
+    /// Saves the result; returns a message to show, or nil.
+    static func handle(_ result: Result<ASAuthorization, Error>) -> String? {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                return "Sign in didn't finish. Please try again."
+            }
+            AppleAccount.save(userID: credential.user, givenName: credential.fullName?.givenName)
+            return nil
+        case .failure(let error):
+            if (error as? ASAuthorizationError)?.code == .canceled { return nil }
+            return "Sign in with Apple isn't available right now. Please try again later."
+        }
     }
 }
 
 #if DEBUG
 /// SIMULATOR TESTING ONLY, compiled out of Release. The simulator has no real microphone input and no
 /// motion sensor, so these launch arguments stand in for them:
-///   -breathingDebugAnswer yes|no|silent    → the answer to both questions, without listening
-///   -breathingDebugVerdicts miss,follow,…   → the breath check's verdict for each cycle, in order
+///   -breathingDebugAnswers "fine,yes,no"   → the answer to each question in turn ("silent" = no answer,
+///                                             "denied" = microphone refused); none left = no answer
+///   -breathingDebugMotion "follow,still,…"  → a fake chest: calibrates on natural breathing, then for
+///                                             each guided inhale breathes along ("follow") or stays still;
+///                                             after a pause it breathes in again after 8 s
 nonisolated enum BreathingDebug {
-    static var answerOverride: String?  { UserDefaults.standard.string(forKey: "breathingDebugAnswer") }
-    static var verdictOverride: String? { UserDefaults.standard.string(forKey: "breathingDebugVerdicts") }
+    static var rawAnswers: String? { UserDefaults.standard.string(forKey: "breathingDebugAnswers") }
+    static var rawMotion: String?  { UserDefaults.standard.string(forKey: "breathingDebugMotion") }
+    static let resumeAfterSeconds  = 8.0
 
-    static func answer(from raw: String) -> ReadyAnswer? { ReadyAnswer.parse(raw) }
+    static func answers(from raw: String?) -> [String] {
+        (raw ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
 
-    static func verdicts(from raw: String?) -> [BreathVerdict] {
-        (raw ?? "").split(separator: ",").map {
-            switch $0.trimmingCharacters(in: .whitespaces) {
-            case "miss":   return .notFollowing
-            case "follow": return .following
-            default:       return .unknown
-            }
-        }
+    static func inhalePlan(from raw: String?) -> [Bool] {
+        answers(from: raw).map { $0 == "follow" }
     }
 }
 #endif
@@ -2875,7 +3198,7 @@ nonisolated enum BreathingDebug {
 nonisolated enum BreathingLayout {
     static let preferredCircleSize: CGFloat = 220
     static let minimumCircleSize: CGFloat   = 120
-    static let maxScale: CGFloat            = BreathingPhase.allCases.map(\.targetScale).max() ?? 1
+    static let maxScale: CGFloat            = LungsMotion.fullScale
     static let columnSpacing: CGFloat       = 28
     /// Everything in the column except the lungs: heading, two description lines, up to three status
     /// lines, the controls row, and the four 28 pt gaps, with a little to spare.
@@ -2890,112 +3213,272 @@ nonisolated enum BreathingLayout {
     }
 }
 
-/// Two lungs and an airway, drawn from code (no image assets). In a unit square: trachea at the top
-/// centre, a lobe either side.
-struct LungsShape: Shape {
+/// One lung, drawn from code (no image assets), in a unit square. The viewer's left is the person's
+/// right lung; the other side is mirrored with a cardiac notch on its inner edge.
+struct LungLobeShape: Shape {
+    let mirrored: Bool
+
+    func path(in rect: CGRect) -> Path {
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + (mirrored ? 1 - x : x) * rect.width, y: rect.minY + y * rect.height)
+        }
+        let inner: CGFloat = mirrored ? 0.40 : 0.45      // the cardiac notch on the person's left lung
+        var path = Path()
+        path.move(to: p(0.40, 0.17))
+        path.addCurve(to: p(0.13, 0.48), control1: p(0.30, 0.11), control2: p(0.16, 0.27))
+        path.addCurve(to: p(0.10, 0.86), control1: p(0.09, 0.64), control2: p(0.06, 0.79))
+        path.addCurve(to: p(0.30, 0.89), control1: p(0.14, 0.94), control2: p(0.22, 0.90))
+        path.addCurve(to: p(inner, 0.84), control1: p(0.36, 0.89), control2: p(inner - 0.02, 0.88))
+        path.addCurve(to: p(0.44, 0.58), control1: p(inner + 0.02, 0.74), control2: p(0.47, 0.65))
+        path.addCurve(to: p(0.42, 0.45), control1: p(0.41, 0.54), control2: p(0.40, 0.49))
+        path.addCurve(to: p(0.40, 0.17), control1: p(0.45, 0.36), control2: p(0.44, 0.22))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// The faint lines between the lobes (two on the person's right lung, one on the left).
+struct LungFissuresShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height) }
+        var path = Path()
+        path.move(to: p(0.40, 0.38)); path.addQuadCurve(to: p(0.17, 0.80), control: p(0.27, 0.60))
+        path.move(to: p(0.14, 0.55)); path.addQuadCurve(to: p(0.33, 0.54), control: p(0.24, 0.57))
+        path.move(to: p(0.60, 0.38)); path.addQuadCurve(to: p(0.83, 0.80), control: p(0.73, 0.60))
+        return path
+    }
+}
+
+/// The airway's branches inside each lung.
+struct BronchialTreeShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
         for mirrored in [false, true] {
             func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
                 CGPoint(x: rect.minX + (mirrored ? 1 - x : x) * rect.width, y: rect.minY + y * rect.height)
             }
-            path.move(to: p(0.44, 0.30))
-            path.addCurve(to: p(0.10, 0.62), control1: p(0.30, 0.20), control2: p(0.10, 0.40))
-            path.addCurve(to: p(0.24, 0.95), control1: p(0.08, 0.84), control2: p(0.14, 0.95))
-            path.addCurve(to: p(0.45, 0.86), control1: p(0.36, 0.95), control2: p(0.44, 0.93))
-            path.addCurve(to: p(0.44, 0.30), control1: p(0.47, 0.68), control2: p(0.47, 0.42))
-            path.closeSubpath()
+            path.move(to: p(0.39, 0.46)); path.addQuadCurve(to: p(0.27, 0.32), control: p(0.33, 0.42))
+            path.move(to: p(0.39, 0.46)); path.addQuadCurve(to: p(0.22, 0.62), control: p(0.31, 0.52))
+            path.move(to: p(0.39, 0.46)); path.addQuadCurve(to: p(0.33, 0.76), control: p(0.38, 0.62))
+            path.move(to: p(0.31, 0.38)); path.addLine(to: p(0.33, 0.30))
+            path.move(to: p(0.28, 0.55)); path.addLine(to: p(0.20, 0.52))
+            path.move(to: p(0.36, 0.64)); path.addLine(to: p(0.27, 0.71))
         }
         return path
     }
 }
 
-struct AirwayShape: Shape {
+/// Trachea and main bronchi: one centre line, drawn as a soft tube.
+struct TracheaShape: Shape {
     func path(in rect: CGRect) -> Path {
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
-        }
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height) }
         var path = Path()
-        path.move(to: p(0.50, 0.04))
-        path.addLine(to: p(0.50, 0.36))
-        path.move(to: p(0.50, 0.36))
-        path.addQuadCurve(to: p(0.38, 0.50), control: p(0.42, 0.38))
-        path.move(to: p(0.50, 0.36))
-        path.addQuadCurve(to: p(0.62, 0.50), control: p(0.58, 0.38))
+        path.move(to: p(0.50, 0.03))
+        path.addLine(to: p(0.50, 0.33))
+        path.addQuadCurve(to: p(0.39, 0.46), control: p(0.45, 0.36))
+        path.move(to: p(0.50, 0.33))
+        path.addQuadCurve(to: p(0.61, 0.46), control: p(0.55, 0.36))
         return path
     }
 }
 
-/// The breathing visual: lungs that widen on the inhale and settle on the exhale, with the phase word
-/// on a soft label so it stays readable over the drawing.
+/// The rings of cartilage across the trachea.
+struct TracheaRingsShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for y in stride(from: 0.07, through: 0.30, by: 0.035) {
+            path.move(to: CGPoint(x: rect.minX + 0.474 * rect.width, y: rect.minY + y * rect.height))
+            path.addQuadCurve(to: CGPoint(x: rect.minX + 0.526 * rect.width, y: rect.minY + y * rect.height),
+                              control: CGPoint(x: rect.midX, y: rect.minY + (y + 0.012) * rect.height))
+        }
+        return path
+    }
+}
+
+/// The breathing visual (round 4, item 9): softly shaded lungs with a natural trachea, all in code.
+/// No text is drawn on it (item 4). The lungs widen with `scale`, which comes from the breath detector.
 struct LungsView: View {
     let size: CGFloat
     let scale: CGFloat
     let colors: [Color]
     let ring: Color
-    let label: String
+
+    private var light: Color { colors.first ?? .teal }
+    private var deep: Color  { colors.last ?? .blue }
 
     var body: some View {
         ZStack {
+            // The airway sits behind the lungs, so the bronchi disappear into them as in a real chest.
             ZStack {
-                LungsShape()
-                    .fill(LinearGradient(colors: colors.map { $0.opacity(0.35) }, startPoint: .top, endPoint: .bottom))
-                LungsShape()
-                    .stroke(ring.opacity(0.6), lineWidth: 2)
-                AirwayShape()
-                    .stroke(ring.opacity(0.6), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                TracheaShape()
+                    .stroke(deep.opacity(0.32), style: StrokeStyle(lineWidth: size * 0.065, lineCap: .round, lineJoin: .round))
+                TracheaShape()
+                    .stroke(light.opacity(0.30), style: StrokeStyle(lineWidth: size * 0.03, lineCap: .round, lineJoin: .round))
+                TracheaRingsShape()
+                    .stroke(Color.white.opacity(0.35), style: StrokeStyle(lineWidth: 1, lineCap: .round))
             }
-            .frame(width: size, height: size)
-            .scaleEffect(x: scale, y: 1 + (scale - 1) * 0.6)    // a chest widens more than it lengthens
 
-            Text(label)
-                .font(.title3).fontWeight(.semibold)
-                .lineLimit(1).minimumScaleFactor(0.6)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-                .offset(y: size * 0.12)
+            ZStack {
+                lobe(mirrored: false, highlight: UnitPoint(x: 0.27, y: 0.40))
+                lobe(mirrored: true,  highlight: UnitPoint(x: 0.73, y: 0.40))
+                LungFissuresShape()
+                    .stroke(deep.opacity(0.25), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+                BronchialTreeShape()
+                    .stroke(deep.opacity(0.22), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            }
+            .scaleEffect(x: scale, y: 1 + (scale - 1) * 0.5, anchor: UnitPoint(x: 0.5, y: 0.2))
         }
+        .frame(width: size, height: size)
+        .shadow(color: deep.opacity(0.18), radius: 10, y: 6)
+        .animation(.linear(duration: 0.12), value: scale)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
+        .accessibilityLabel("Lungs")
+        .accessibilityValue(scale > LungsMotion.restScale + 0.05 ? "breathing in" : "at rest")
         .accessibilityIdentifier("breathingLungs")
+    }
+
+    private func lobe(mirrored: Bool, highlight: UnitPoint) -> some View {
+        let shape = LungLobeShape(mirrored: mirrored)
+        return ZStack {
+            shape.fill(RadialGradient(colors: [light.opacity(0.55), deep.opacity(0.38), deep.opacity(0.22)],
+                                      center: highlight, startRadius: 0, endRadius: size * 0.42))
+            shape.stroke(deep.opacity(0.35), lineWidth: size * 0.05)          // soft shade along the edges
+                .blur(radius: size * 0.02)
+                .clipShape(shape)
+            Ellipse()
+                .fill(Color.white.opacity(0.28))
+                .frame(width: size * 0.10, height: size * 0.22)
+                .position(x: size * highlight.x, y: size * highlight.y)
+                .blur(radius: size * 0.03)
+                .clipShape(shape)
+            shape.stroke(ring.opacity(0.45), lineWidth: 1.2)
+        }
     }
 }
 
-/// Reads the phone's tilt 20 times a second while the exercise runs. CoreMotion device motion needs
-/// no permission prompt; samples stay in memory for the session and are never stored or sent.
-/// On the simulator `isAvailable` is false and the exercise keeps its own pace.
+/// Reads the phone's tilt 20 times a second during the exercise. CoreMotion device motion needs no
+/// permission prompt; readings stay in memory for the session and are never stored or sent.
+/// Calibration samples one natural cycle; after that every reading feeds the BreathTracker, whose
+/// verdict moves the lungs (held still while paused).
 final class BreathMotionMonitor: ObservableObject {
-    private var manager = CMMotionManager()
-    private var samples: [BreathMotionSample] = []
+    @Published private(set) var breath: Breath = .still
+    @Published private(set) var lungScale: CGFloat = LungsMotion.restScale
 
-    var isAvailable: Bool { manager.isDeviceMotionAvailable }
+    /// While paused the lungs hold still.
+    var isPaused = false
+    /// True during a guided inhale (or while waiting to resume): the first clear movement defines "in".
+    var learnsInhale = false
+
+    private var manager = CMMotionManager()
+    private var tracker: BreathTracker?
+    private var calibrationSamples: [BreathMotionSample] = []
+    private var isCalibrating = false
+    private var lastTime: TimeInterval?
+
+    var isCalibrated: Bool { tracker != nil }
+
+    var isAvailable: Bool {
+        #if DEBUG
+        if usesFakeChest { return true }
+        #endif
+        return manager.isDeviceMotionAvailable
+    }
 
     func start() {
-        guard isAvailable, !manager.isDeviceMotionActive else { return }
-        samples.removeAll()
+        guard isAvailable else { return }
+        lastTime = nil
+        #if DEBUG
+        if usesFakeChest { startFakeChest(); return }
+        #endif
+        guard !manager.isDeviceMotionActive else { return }
         manager.deviceMotionUpdateInterval = 1.0 / 20
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
             guard let motion else { return }
             let g = motion.gravity, a = motion.userAcceleration
             let sample = BreathMotionSample(time: motion.timestamp, gravity: SIMD3(g.x, g.y, g.z),
                                             userAcceleration: (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot())
-            self?.append(sample)
+            self?.handle(sample)
         }
     }
 
+    func beginCalibration() {
+        calibrationSamples.removeAll()
+        isCalibrating = true
+    }
+
+    /// True if one natural cycle was clear enough to set the thresholds.
+    func finishCalibration() -> Bool {
+        isCalibrating = false
+        defer { calibrationSamples.removeAll() }
+        guard let profile = BreathCalibration.profile(from: calibrationSamples) else { return false }
+        tracker = BreathTracker(profile: profile, inhaleSign: tracker?.inhaleSign)
+        return true
+    }
+
+    /// Stops the sensor. The calibration is kept for "another round" on this screen.
     func stop() {
         manager.stopDeviceMotionUpdates()
-        samples.removeAll()
+        #if DEBUG
+        fakeTimer?.invalidate()
+        fakeTimer = nil
+        #endif
+        isCalibrating = false
+        calibrationSamples.removeAll()
+        if let profile = tracker?.profile {
+            tracker = BreathTracker(profile: profile, inhaleSign: tracker?.inhaleSign)
+        }
+        if breath != .still { breath = .still }
     }
 
-    func samples(from start: TimeInterval, to end: TimeInterval) -> [BreathMotionSample] {
-        samples.filter { $0.time >= start && $0.time <= end }
+    /// The lungs settle back to rest at the end of a session.
+    func settleLungs() {
+        lungScale = LungsMotion.restScale
     }
 
-    private func append(_ sample: BreathMotionSample) {
-        samples.append(sample)
-        if samples.count > 1_200 { samples.removeFirst(samples.count - 1_200) }   // last ~60 s
+    private func handle(_ sample: BreathMotionSample) {
+        let elapsed = lastTime.map { max(0, sample.time - $0) } ?? 0
+        lastTime = sample.time
+        if isCalibrating {
+            calibrationSamples.append(sample)
+            if calibrationSamples.count > 400 { calibrationSamples.removeFirst(calibrationSamples.count - 400) }
+        }
+        guard var current = tracker else { return }
+        current.add(sample, learnInhale: learnsInhale)
+        tracker = current
+        if current.breath != breath { breath = current.breath }
+        let next = LungsMotion.next(lungScale, breath: current.breath, elapsed: elapsed, paused: isPaused)
+        if next != lungScale { lungScale = next }
     }
+
+    #if DEBUG
+    /// Simulator only: a fake chest the screen tells what to do.
+    enum FakeChest { case natural, breatheIn, breatheOut, hold }
+    var fakeChest = FakeChest.hold
+    private var fakeTimer: Timer?
+    private var fakeAngle = 0.0
+    private var fakeClock = 0.0
+    private var usesFakeChest: Bool { BreathingDebug.rawMotion != nil }
+
+    private func startFakeChest() {
+        fakeTimer?.invalidate()
+        fakeTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.fakeTick() }
+        }
+    }
+
+    private func fakeTick() {
+        fakeClock += 1.0 / 20
+        let step = 0.45 / 20                               // degrees per tick: about 1.35° in 3 s
+        switch fakeChest {
+        case .natural:    fakeAngle = 0.3 * (1 - cos(2 * .pi * fakeClock / 5))
+        case .breatheIn:  fakeAngle = min(1.2 + 0.6, fakeAngle + step)
+        case .breatheOut: fakeAngle = max(0, fakeAngle - step)
+        case .hold:       break
+        }
+        let r = fakeAngle * .pi / 180
+        handle(BreathMotionSample(time: fakeClock, gravity: SIMD3(0, sin(r), -cos(r)), userAcceleration: 0.003))
+    }
+    #endif
 }
 
 /// Speaks for Alex on the device (AVSpeechSynthesizer; no network, no text leaves the phone). Owns the
@@ -3048,10 +3531,7 @@ final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizer
 
     /// `completion` runs once the line has finished, or straight away if speech is stopped.
     func speak(_ text: String, completion: (() -> Void)? = nil) {
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice           = voice
-        utterance.rate            = BreathingCueScript.voiceRate
-        utterance.pitchMultiplier = BreathingCueScript.voicePitch
+        let utterance = BreathingCueScript.utterance(text, voice: voice)
         if let completion { completions[ObjectIdentifier(utterance)] = completion }
         pending += 1
         synthesizer.speak(utterance)
@@ -3119,8 +3599,8 @@ final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizer
 
 struct BreathingExerciseView: View {
 
-    private enum Stage { case starting, talking, listening, cannotHear, running, paused, finished, ended }
-    private enum Listening { case feeling, ready }
+    private enum Stage { case starting, talking, listening, cannotHear, settling, running, paused, ended }
+    private enum Listening { case feeling, answer }
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.requestReview) private var requestReview
@@ -3136,20 +3616,23 @@ struct BreathingExerciseView: View {
     @State private var listeningFor   = Listening.feeling
     @State private var lastHeard      = Date.distantPast
     @State private var run            = 0      // bumps on every start and stop; stale timers do nothing
-    @State private var phase          = "Hello"
     @State private var caption        = ""
-    @State private var sensingNote    = ""
-    @State private var scale: CGFloat = 1.0
+    @State private var listeningNote  = ""
     @State private var isActive       = true
     @State private var phaseStep      = 0      // bumps on every phase change; drives the haptic pulse
-    @State private var detector       = BreathDetector()
+    @State private var currentPhase: BreathingPhase?
+    @State private var phaseWatch: BreathPhaseWatch?
+    @State private var awaitingResume = false
     @State private var coach          = BreathingCoach()
+    @State private var sessionDone    = false
+    @State private var greetingName: String?
     @State private var shownStreak    = 0
     @State private var streak: BreathingStreak.State?
     @State private var newBadge: Int?
     @State private var rewardUnlocked = false
     #if DEBUG
-    @State private var debugVerdicts: [BreathVerdict] = []
+    @State private var debugAnswers: [String] = []
+    @State private var debugInhalePlan: [Bool] = []
     #endif
 
     var body: some View {
@@ -3160,14 +3643,13 @@ struct BreathingExerciseView: View {
                 VStack(spacing: BreathingLayout.columnSpacing) {
                     Spacer()
 
-                    if stage == .finished && rewardUnlocked {
+                    if sessionDone && rewardUnlocked && stage != .running {
                         // Same height as the full-size visual, so nothing below moves.
                         rewardCard(height: size * BreathingLayout.maxScale)
                     } else {
-                        LungsView(size: size, scale: scale,
+                        LungsView(size: size, scale: motion.lungScale,
                                   colors: rewardUnlocked ? BreathingReward.circleColors : [Color.teal, Color.blue],
-                                  ring: rewardUnlocked ? BreathingReward.ringColor : Color.teal,
-                                  label: phase)
+                                  ring: rewardUnlocked ? BreathingReward.ringColor : Color.teal)
                             .padding(.vertical, BreathingLayout.overflow(for: size))   // room for the full-size lungs
                     }
 
@@ -3205,8 +3687,9 @@ struct BreathingExerciseView: View {
                 if recording && stage != .listening { listener.stopRecording() }
             }
             .onChange(of: listener.permissionDenied) { _, denied in
-                if denied && stage == .listening { stopListening(); cannotHear() }
+                if denied && stage == .listening { stopListening(); cannotHear(permissionRefused: true) }
             }
+            .onChange(of: motion.breath) { _, breath in breathChanged(breath) }
         }
     }
 
@@ -3247,58 +3730,63 @@ struct BreathingExerciseView: View {
             .accessibilityIdentifier("breathingCaption")
     }
 
+    private var cycleText: String {
+        "Cycle \(min(coach.completedCycles + 1, BreathingCueScript.cycles)) of \(BreathingCueScript.cycles)"
+    }
+
     @ViewBuilder private var statusLines: some View {
         switch stage {
-        case .running, .paused:
-            Text("Cycle \(min(coach.completedCycles + 1, BreathingCueScript.cycles)) of \(BreathingCueScript.cycles)")
+        case .running:
+            Text(cycleText + (currentPhase.map { " · \($0.label)" } ?? ""))
                 .font(.subheadline).foregroundColor(.teal)
-            if stage == .paused { captionText }
-            else {
-                Text(sensingNote)
-                    .font(.caption2).foregroundColor(.secondary).multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        case .finished:
-            streakLine
-            if let newBadge {
-                Text("🏅 New badge: \(newBadge) days in a row").font(.caption)
-            } else if let badge = BreathingStreak.highestBadge(for: shownStreak) {
-                Text("🏅 \(badge)-day badge").font(.caption).foregroundColor(.secondary)
-            }
+                .accessibilityIdentifier("breathingCycle")
+            Text("Alex is following your breathing through the phone's motion sensor.")
+                .font(.caption2).foregroundColor(.secondary).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        case .paused:
+            Text("Paused · \(cycleText)").font(.subheadline).foregroundColor(.teal)
+                .accessibilityIdentifier("breathingCycle")
+            captionText
+            Text(BreathingCueScript.pauseTip).font(.caption2).foregroundColor(.secondary)
         default:
-            if !caption.isEmpty { captionText }
-            streakLine
-        }
-    }
-
-    @ViewBuilder private var controls: some View {
-        if stage == .cannotHear {
-            // Only when Alex cannot hear at all (microphone refused or busy, speech recognition
-            // unavailable). Without it, Breathing could never start for those users. Decision for Joel.
-            Button { startExercise(run) } label: { Text("I'm ready").frame(maxWidth: 200) }
-                .buttonStyle(.borderedProminent).tint(.teal).controlSize(.large)
-                .accessibilityIdentifier("breathingImReady")
-        } else {
-            HStack(spacing: 12) {
-                Toggle(isOn: $voiceEnabled) {
-                    Label("Voice", systemImage: voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                        .font(.subheadline)
+            if sessionDone {
+                streakLine
+                if let newBadge {
+                    Text("🏅 New badge: \(newBadge) days in a row").font(.caption)
+                } else if let badge = BreathingStreak.highestBadge(for: shownStreak) {
+                    Text("🏅 \(badge)-day badge").font(.caption).foregroundColor(.secondary)
                 }
-                .fixedSize()
-                .tint(.teal)
-                .accessibilityIdentifier("breathingVoiceToggle")
-                Picker("Voice", selection: $voiceChoice) {
-                    ForEach(BreathingVoiceChoice.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 150)
-                .disabled(!voiceEnabled)
-                .accessibilityIdentifier("breathingVoiceChoice")
             }
+            if !caption.isEmpty { captionText }
+            if !listeningNote.isEmpty {
+                Text(listeningNote).font(.caption).foregroundColor(.teal)
+                    .accessibilityIdentifier("breathingListening")
+            }
+            if !sessionDone { streakLine }
         }
     }
 
-    // MARK: Flow: Alex's questions → cycles → finish (or a gentle end)
+    /// The Voice switch and the Alex/Men choice. There is no start button (round 4, item 2).
+    private var controls: some View {
+        HStack(spacing: 12) {
+            Toggle(isOn: $voiceEnabled) {
+                Label("Voice", systemImage: voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.subheadline)
+            }
+            .fixedSize()
+            .tint(.teal)
+            .accessibilityIdentifier("breathingVoiceToggle")
+            Picker("Voice", selection: $voiceChoice) {
+                ForEach(BreathingVoiceChoice.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 150)
+            .disabled(!voiceEnabled)
+            .accessibilityIdentifier("breathingVoiceChoice")
+        }
+    }
+
+    // MARK: Flow: Alex's questions → calibration → cycles → another round? (or a gentle end)
 
     private func after(_ seconds: Double, _ thisRun: Int, _ action: @escaping () -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
@@ -3306,6 +3794,8 @@ struct BreathingExerciseView: View {
             action()
         }
     }
+
+    private func quoted(_ lines: [String]) -> String { "“\(lines.joined(separator: " "))”" }
 
     /// Alex says `lines` one after another (or, with the voice off, shows them long enough to read),
     /// then `then` runs.
@@ -3324,41 +3814,57 @@ struct BreathingExerciseView: View {
         let saved = BreathingStreak.load()
         shownStreak    = BreathingStreak.displayed(saved, on: Date())
         rewardUnlocked = BreathingReward.isUnlocked(by: saved)
+        greetingName   = AppleAccount.givenName()
         guide.use(voiceChoice)
+        #if DEBUG
+        debugAnswers    = BreathingDebug.answers(from: BreathingDebug.rawAnswers)
+        debugInhalePlan = BreathingDebug.inhalePlan(from: BreathingDebug.rawMotion)
+        #endif
+        Task { @MainActor in
+            await AppleSignIn.refreshCredentialState()
+            greetingName = AppleAccount.givenName()
+        }
         let thisRun = run
         after(1.0, thisRun) { beginConversation() }     // a breath of quiet before Alex speaks
     }
 
     private func beginConversation() {
         run += 1
-        coach    = BreathingCoach()
-        detector = BreathDetector()
-        streak   = nil
-        newBadge = nil
-        #if DEBUG
-        debugVerdicts = BreathingDebug.verdicts(from: BreathingDebug.verdictOverride)
-        #endif
+        coach       = BreathingCoach()
+        sessionDone = false
+        streak      = nil
+        newBadge    = nil
         perform(BreathingConversation.firstStep, run)
     }
 
     private func perform(_ next: BreathingConversation.Step, _ thisRun: Int) {
         step = next
+        listeningNote = ""
         switch next {
         case .askFeeling:
-            stage   = .talking
-            phase   = "Hello"
-            caption = "“\(BreathingCueScript.opening)”"
-            say([BreathingCueScript.opening], thisRun) { listen(for: .feeling, thisRun) }
-        case .askReady(_, let thankFirst):
             stage = .talking
-            phase = "Ready?"
-            let lines = (thankFirst ? [BreathingCueScript.thanks] : []) + [BreathingCueScript.readyQuestion]
-            caption = "“\(lines.joined(separator: " "))”"
-            say(lines, thisRun) { listen(for: .ready, thisRun) }
+            let line = BreathingCueScript.opening(name: greetingName)
+            caption = quoted([line])
+            say([line], thisRun) { listen(for: .feeling, thisRun) }
+        case .askReady(let attempt, let thankFirst):
+            stage = .talking
+            let lines = (thankFirst ? [BreathingCueScript.thanks] : [])
+                + [attempt == 1 ? BreathingCueScript.readyQuestion : BreathingCueScript.readyAgain]
+            caption = quoted(lines)
+            say(lines, thisRun) { listen(for: .answer, thisRun) }
         case .begin:
             startExercise(thisRun)
         case .endGently:
             endGently(BreathingCueScript.declined)
+        case .askAnotherRound(let attempt):
+            stage = .talking
+            let line = attempt == 1 ? BreathingCueScript.anotherRound : BreathingCueScript.anotherRoundAgain
+            caption = quoted([line])
+            say([line], thisRun) { listen(for: .answer, thisRun) }
+        case .goAgain:
+            goAgain(thisRun)
+        case .goodbye:
+            endGently(BreathingCueScript.goodbye)
         }
     }
 
@@ -3371,22 +3877,27 @@ struct BreathingExerciseView: View {
     }
 
     private func listen(for purpose: Listening, _ thisRun: Int) {
-        listeningFor = purpose
+        listeningFor  = purpose
+        let note      = purpose == .feeling ? "Listening…" : "Listening… say “yes” or “no”."
         #if DEBUG
-        if let raw = BreathingDebug.answerOverride {          // simulator: no listening at all
-            stage   = .listening
-            caption = purpose == .feeling ? "Listening…" : "Listening… say “yes” to begin."
-            let answer = BreathingDebug.answer(from: raw)
-            after(1.5, thisRun) {
-                answered(purpose == .feeling ? (raw == "silent" ? .feelingSilent : .feelingHeard) : .ready(answer), thisRun)
+        if BreathingDebug.rawAnswers != nil {                 // simulator: no listening at all
+            let raw = debugAnswers.isEmpty ? "silent" : debugAnswers.removeFirst()
+            if raw == "denied" { cannotHear(permissionRefused: true); return }
+            stage         = .listening
+            listeningNote = note
+            let silent    = raw == "silent"
+            after(silent ? BreathingCueScript.listenSeconds : 1.5, thisRun) {
+                guard stage == .listening else { return }
+                answered(purpose == .feeling ? (silent ? .feelingSilent : .feelingHeard)
+                                             : .ready(silent ? nil : ReadyAnswer.parse(raw)), thisRun)
             }
             return
         }
         #endif
-        guard canListen else { cannotHear(); return }
-        stage     = .listening
-        caption   = purpose == .feeling ? "Listening…" : "Listening… say “yes” to begin."
-        lastHeard = .distantPast
+        guard canListen else { cannotHear(permissionRefused: listener.permissionDenied); return }
+        stage         = .listening
+        listeningNote = note
+        lastHeard     = .distantPast
         guide.releaseForListening()
         listener.startRecording()
         after(BreathingCueScript.listenSeconds, thisRun) {
@@ -3398,7 +3909,7 @@ struct BreathingExerciseView: View {
     }
 
     /// Each new piece of transcript. The feelings answer is never read: it only tells Alex someone is
-    /// still talking. The ready answer is matched for yes or no and then discarded.
+    /// still talking. A yes/no answer is matched and then discarded.
     private func heard(_ said: String) {
         guard stage == .listening, !said.isEmpty else { return }
         let thisRun = run
@@ -3411,7 +3922,7 @@ struct BreathingExerciseView: View {
                 stopListening()
                 answered(.feelingHeard, thisRun)
             }
-        case .ready:
+        case .answer:
             guard let answer = ReadyAnswer.parse(said) else { return }
             stopListening()
             answered(.ready(answer), thisRun)
@@ -3428,96 +3939,12 @@ struct BreathingExerciseView: View {
         if listener.isRecording || stage == .listening { listener.stopRecording() }
     }
 
-    private func cannotHear() {
-        stage   = .cannotHear
-        phase   = "Ready?"
-        caption = "I can't hear you right now. Tap “I'm ready” when you are."
-    }
-
-    // MARK: The exercise
-
-    private func startExercise(_ thisRun: Int) {
-        guard run == thisRun, isActive else { return }
-        stopListening()                                  // the mic is never open during the exercise
-        stage   = .running
-        caption = ""
-        motion.start()
-        sensingNote = motion.isAvailable
-            ? "Breath sensing on. Rest your phone on your chest or belly."
-            : "Breath sensing isn't available here, so the lungs keep their own pace."
-        say([BreathingCueScript.letsBegin], thisRun) { runCycle(thisRun) }
-    }
-
-    private func runCycle(_ thisRun: Int) {
-        guard run == thisRun, isActive, stage == .running else { return }
-        runPhase(0, thisRun, marks: [:]) { marks in judgeCycle(marks, thisRun) }
-    }
-
-    private func runPhase(_ index: Int, _ thisRun: Int, marks: [BreathingPhase: ClosedRange<TimeInterval>],
-                          done: @escaping ([BreathingPhase: ClosedRange<TimeInterval>]) -> Void) {
-        let phases = BreathingPhase.allCases
-        guard index < phases.count else { done(marks); return }
-        guard stage == .running else { return }
-        let current = phases[index]
-        let start   = ProcessInfo.processInfo.systemUptime   // same clock as CoreMotion timestamps
-        phase       = current.label
-        phaseStep  += 1
-        withAnimation(.easeInOut(duration: Double(current.seconds))) { scale = current.targetScale }
-        if voiceEnabled { guide.speakOnBeat(BreathingCueScript.cue(for: current)) }
-        after(Double(current.seconds), thisRun) {
-            var updated = marks
-            updated[current] = start...ProcessInfo.processInfo.systemUptime
-            runPhase(index + 1, thisRun, marks: updated, done: done)
-        }
-    }
-
-    private func judgeCycle(_ marks: [BreathingPhase: ClosedRange<TimeInterval>], _ thisRun: Int) {
-        var verdict = BreathVerdict.unknown
-        if let inhale = marks[.inhale], let exhale = marks[.exhale] {
-            verdict = detector.evaluate(inhale: motion.samples(from: inhale.lowerBound, to: inhale.upperBound),
-                                        exhale: motion.samples(from: exhale.lowerBound, to: exhale.upperBound))
-        }
-        #if DEBUG
-        if !debugVerdicts.isEmpty { verdict = debugVerdicts.removeFirst() }    // simulator stand-in
-        #endif
-        if motion.isAvailable {
-            switch verdict {
-            case .following:    sensingNote = "Breath sensing: you're breathing with the lungs."
-            case .unknown:      sensingNote = "Breath sensing: can't tell. Keep the phone still on your chest or belly."
-            case .notFollowing: break
-            }
-        }
-        switch coach.record(verdict) {
-        case .nextCycle: runCycle(thisRun)
-        case .finished:  finish()
-        case .tryAgain:  tryAgain(thisRun)
-        case .endGently: endGently(BreathingCueScript.tooManyMisses)
-        }
-    }
-
-    /// A missed cycle: Alex says so gently, the lungs settle, and the same cycle runs again. The
-    /// detector judges the retried cycle like any other, so it is re-armed after every retry.
-    private func tryAgain(_ thisRun: Int) {
-        stage   = .paused
-        phase   = "Paused"
-        caption = BreathingCueScript.tryAgain
-        withAnimation(.easeInOut(duration: 1)) { scale = 1.0 }
-        say([BreathingCueScript.tryAgain], thisRun) {
-            after(0.8, thisRun) {
-                guard stage == .paused else { return }
-                stage = .running
-                runCycle(thisRun)
-            }
-        }
-    }
-
-    private func endGently(_ line: String) {
-        stage   = .ended
-        motion.stop()
-        stopListening()
-        phase   = "Rest"
+    /// Round 4, item 2: no button. A plain message (spoken too, if the voice is on) and nothing else.
+    private func cannotHear(permissionRefused: Bool) {
+        stage         = .cannotHear
+        listeningNote = ""
+        let line = BreathingCueScript.cannotHear(permissionRefused: permissionRefused)
         caption = line
-        withAnimation(.easeInOut(duration: 1)) { scale = 1.0 }
         if voiceEnabled {
             guide.prepare()
             guide.speak(line)
@@ -3525,26 +3952,166 @@ struct BreathingExerciseView: View {
         guide.finish()
     }
 
+    // MARK: The exercise
+
+    private func startExercise(_ thisRun: Int) {
+        guard run == thisRun, isActive else { return }
+        stopListening()                                  // the mic is never open during the exercise
+        guard motion.isAvailable else { endGently(BreathingCueScript.noMotionSensor); return }
+        stage = .settling
+        motion.start()
+        caption = quoted([BreathingCueScript.settle, BreathingCueScript.calibrate])
+        say([BreathingCueScript.settle, BreathingCueScript.calibrate], thisRun) { calibrate(thisRun) }
+    }
+
+    /// One natural cycle sets the detector's thresholds. If it was unclear, Alex asks once more, and
+    /// again after that: the exercise never starts without it (Done always works).
+    private func calibrate(_ thisRun: Int) {
+        guard stage == .settling else { return }
+        listeningNote = "Feeling your breathing…"
+        motion.beginCalibration()
+        #if DEBUG
+        motion.fakeChest = .natural
+        #endif
+        after(BreathCalibration.seconds, thisRun) {
+            guard stage == .settling else { return }
+            listeningNote = ""
+            #if DEBUG
+            motion.fakeChest = .hold
+            #endif
+            if motion.finishCalibration() {
+                caption = quoted([BreathingCueScript.letsBegin])
+                say([BreathingCueScript.letsBegin], thisRun) {
+                    guard stage == .settling else { return }
+                    stage = .running
+                    caption = ""
+                    runPhase(0, thisRun)
+                }
+            } else {
+                caption = quoted([BreathingCueScript.calibrateAgain])
+                say([BreathingCueScript.calibrateAgain], thisRun) { calibrate(thisRun) }
+            }
+        }
+    }
+
+    private func runPhase(_ index: Int, _ thisRun: Int) {
+        let phases = BreathingPhase.allCases
+        guard run == thisRun, isActive, stage == .running, index < phases.count else { return }
+        let current = phases[index]
+        currentPhase        = current
+        phaseStep          += 1
+        motion.isPaused     = false
+        motion.learnsInhale = current == .inhale
+        phaseWatch          = BreathPhaseWatch(phase: current, current: motion.breath)
+        #if DEBUG
+        switch current {
+        case .inhale:
+            let follows = debugInhalePlan.isEmpty ? true : debugInhalePlan.removeFirst()
+            motion.fakeChest = follows ? .breatheIn : .hold
+        case .exhale:
+            motion.fakeChest = .breatheOut
+        case .holdAfterInhale, .holdAfterExhale:
+            motion.fakeChest = .hold
+        }
+        #endif
+        if voiceEnabled { guide.speakOnBeat(BreathingCueScript.cue(for: current)) }
+        after(Double(current.seconds), thisRun) {
+            guard stage == .running else { return }
+            switch coach.phaseEnded(current, breathDetected: phaseWatch?.detected ?? false) {
+            case .nextPhase: runPhase(index + 1, thisRun)
+            case .nextCycle: runPhase(0, thisRun)
+            case .finished:  finish()
+            case .pause:     pause(thisRun)
+            }
+        }
+    }
+
+    private func breathChanged(_ breath: Breath) {
+        if stage == .running { phaseWatch?.observe(breath) }
+        if stage == .paused, awaitingResume, breath == .inhaling { resume(run) }
+    }
+
+    /// Round 4, item 6: no breath detected. The lungs hold still, Alex invites a breath, and the same
+    /// cycle continues from its inhale as soon as she feels one. There is no limit and no ending here.
+    private func pause(_ thisRun: Int) {
+        stage               = .paused
+        awaitingResume      = false
+        motion.isPaused     = true
+        motion.learnsInhale = true
+        caption             = BreathingCueScript.pause
+        #if DEBUG
+        motion.fakeChest = .hold
+        after(BreathingDebug.resumeAfterSeconds, thisRun) { motion.fakeChest = .breatheIn }
+        #endif
+        say([BreathingCueScript.pause], thisRun) {
+            guard stage == .paused else { return }
+            awaitingResume = true
+            if motion.breath == .inhaling { resume(thisRun) }
+        }
+    }
+
+    private func resume(_ thisRun: Int) {
+        guard run == thisRun, stage == .paused, awaitingResume else { return }
+        awaitingResume = false
+        stage          = .running
+        caption        = ""
+        runPhase(0, thisRun)                          // the same cycle, starting on the user's own inhale
+    }
+
     private func finish() {
-        stage = .finished
         motion.stop()
+        motion.settleLungs()
+        currentPhase = nil
+        sessionDone  = true
+        if coach.countsForStreak {                    // breathing was detected for every cycle
+            let before  = BreathingStreak.load()
+            let updated = BreathingStreak.record(before, on: Date())
+            BreathingStreak.save(updated)
+            streak         = updated
+            shownStreak    = updated.current
+            newBadge       = BreathingStreak.newMilestone(before: before, after: updated)
+            rewardUnlocked = BreathingReward.isUnlocked(by: updated)
+        }
+        stage   = .talking
+        caption = quoted([BreathingCueScript.congratulations])
+        let thisRun = run
+        say([BreathingCueScript.congratulations], thisRun) {
+            perform(BreathingConversation.afterSession, thisRun)
+        }
+    }
+
+    /// "Yes" to another round: the calibration from this visit is kept, so it starts straight away.
+    private func goAgain(_ thisRun: Int) {
         stopListening()
-        phase = "Well done!"
-        withAnimation(.easeInOut(duration: 1)) { scale = 1.0 }
-        let before  = BreathingStreak.load()
-        let updated = BreathingStreak.record(before, on: Date())
-        BreathingStreak.save(updated)
-        streak         = updated
-        shownStreak    = updated.current
-        newBadge       = BreathingStreak.newMilestone(before: before, after: updated)
-        rewardUnlocked = BreathingReward.isUnlocked(by: updated)
-        caption        = BreathingCueScript.congratulations
+        coach       = BreathingCoach()
+        sessionDone = false
+        newBadge    = nil
+        stage       = .settling
+        motion.start()
+        caption = quoted([BreathingCueScript.goAgain])
+        say([BreathingCueScript.goAgain], thisRun) {
+            guard stage == .settling else { return }
+            stage   = .running
+            caption = ""
+            runPhase(0, thisRun)
+        }
+    }
+
+    private func endGently(_ line: String) {
+        stage         = .ended
+        motion.stop()
+        motion.settleLungs()
+        stopListening()
+        currentPhase  = nil
+        listeningNote = ""
+        caption       = line
         if voiceEnabled {
             guide.prepare()
-            guide.speak(BreathingCueScript.congratulations)
+            guide.speak(line)
         }
         guide.finish()
-        // A calm, finished moment: let the celebration land, then maybe ask. Skipped if closed.
+        guard sessionDone else { return }
+        // A calm, finished moment: let the goodbye land, then maybe ask for a review. Skipped if closed.
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard isActive else { return }
