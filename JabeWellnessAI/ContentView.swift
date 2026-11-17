@@ -270,12 +270,20 @@ final class SafetyChecker {
         "isn't worth living", "sleep and never wake up", "never wake up again",
         "self-harming", "self harming", "self-harmed", "self harmed", "killing myself",
         "hurting myself", "harming myself", "ending my life", "taking my life",
-        "wanted to die", "wanting to die"
+        "wanted to die", "wanting to die",
+        // Round 5 (2026-11-17): forms dictation and quick typing produce ("do not", "my self", a hyphen).
+        "kill my self", "kill-myself", "do not want to live", "don't want to be alive",
+        "do not want to be alive"
     ].map(normalized)
 
     func containsRisk(_ text: String) -> Bool {
+        matchedPhrase(text) != nil
+    }
+
+    /// The listed phrase the text matched (for tests and the task log), or nil.
+    func matchedPhrase(_ text: String) -> String? {
         let text = Self.normalized(text)
-        return Self.riskyKeywords.contains { text.contains($0) }
+        return Self.riskyKeywords.first { text.contains($0) }?.trimmingCharacters(in: .whitespaces)
     }
 
     // Lowercases, drops apostrophes of any style (the iPhone keyboard types a curly ’ by default,
@@ -2561,16 +2569,16 @@ nonisolated enum BreathingCueScript {
     static func opening(name: String?) -> String {
         let first = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hello = first.isEmpty ? "Hi there" : "Hi \(first)"
-        return "\(hello), I'm Alex, your breathing coach. It's so nice to see you. How are you feeling right now?"
+        return "\(hello), I'm Alex. I'll guide your breathing today. How are you feeling right now?"
     }
 
     static let thanks            = "Thank you for sharing that with me."
-    static let readyQuestion     = "Are you ready to breathe together?"
-    static let readyAgain        = "Take your time. Just say yes when you'd like to begin."
+    static let readyQuestion     = "Are you ready to start?"
+    static let readyAgain        = "Take your time. Just say yes when you'd like to start."
     static let declined          = "That's completely okay. I'll be right here whenever you'd like to breathe together."
-    static let settle            = "Let's get comfortable first. Rest your phone gently on your chest."
+    static let settle            = "Let's get comfortable first. Hold your phone gently in both hands, close to you, and keep it as still as you can."
     static let calibrate         = "Now breathe in and out naturally, and I'll follow along with you."
-    static let calibrateAgain    = "I couldn't quite feel your breathing yet, and that's okay. Let's try once more. Breathe in and out naturally, with your phone resting on your chest."
+    static let calibrateAgain    = "I couldn't quite feel your breathing yet, and that's okay. Let's try once more. Hold your phone gently and still, and breathe in and out naturally."
     static let letsBegin         = "Lovely, I can feel your breathing. Let's take a slow breath in together."
     static let pause             = "Let's rest for a moment. Breathe in with me whenever you're ready, and we'll continue from here."
     static let congratulations   = "Wonderful, you've completed your breathing for today. Thank you for taking this time for yourself."
@@ -2580,8 +2588,15 @@ nonisolated enum BreathingCueScript {
     static let goodbye           = "That's okay. Thank you for breathing with me today. See you again tomorrow."
     static let noMotionSensor    = "I can't feel your breathing on this device, so we can't breathe together here yet."
 
+    /// Round 5, item 4: breath detection is approximate, so it is labelled Beta on the screen.
+    static let betaLabel = "Breath detection"
+    static let betaTag   = "BETA"
+
+    /// Round 5, item 6: placeholder portrait on the intro screen until Joel picks one.
+    static let portraitInitial = "A"
+
     /// On screen only, while paused.
-    static let pauseTip = "Tip: rest your phone flat on your chest or belly."
+    static let pauseTip = "Tip: hold your phone gently and keep it still while you breathe."
 
     /// Round 4, item 2: no "I'm ready" button. If Alex can't listen, she says why.
     static func cannotHear(permissionRefused: Bool) -> String {
@@ -2646,11 +2661,13 @@ nonisolated enum BreathingConversation {
         case askAnotherRound(attempt: Int)
         case goAgain
         case goodbye
+        case crisis                          // a spoken answer matched SafetyChecker: nothing follows
     }
 
     nonisolated enum Event {
         case feelingHeard, feelingSilent
         case ready(ReadyAnswer?)            // a yes/no answer; nil = no answer
+        case crisis                          // any answer that matched SafetyChecker
     }
 
     static let firstStep    = Step.askFeeling
@@ -2658,6 +2675,7 @@ nonisolated enum BreathingConversation {
     static let maximumAttempts = 2
 
     static func next(after step: Step, _ event: Event) -> Step {
+        if case .crisis = event { return .crisis }
         switch (step, event) {
         case (.askFeeling, .feelingHeard):   return .askReady(attempt: 1, thankFirst: true)
         case (.askFeeling, .feelingSilent):  return .askReady(attempt: 1, thankFirst: false)
@@ -2923,11 +2941,13 @@ nonisolated enum BreathMath {
 nonisolated enum BreathCalibration {
     static let seconds: Double     = 8          // one natural breath takes about 3 to 6 s
     static let minimumSamples      = 80         // 4 s at 20 Hz
-    static let thresholdFraction   = 0.3
+    // Round 5: tuned for a phone held in the hands (more tremor and small movements than on a chest).
+    static let thresholdFraction   = 0.35
+    static let jitterMultiple      = 4.0
     static let minimumAmplitude    = 0.1 * Double.pi / 180      // 0.1° of tilt
     static let minimumThreshold    = 0.03 * Double.pi / 180
-    static let maximumMovement     = 0.04       // average g of user acceleration; above this the phone is handled
-    static let smoothingSeconds    = 0.4
+    static let maximumMovement     = 0.08       // average g of user acceleration; above this the hands are moving
+    static let smoothingSeconds    = 0.5
 
     static func profile(from samples: [BreathMotionSample]) -> BreathProfile? {
         guard samples.count >= minimumSamples, let first = samples.first else { return nil }
@@ -2957,7 +2977,7 @@ nonisolated enum BreathCalibration {
         let jitter = (sumOfSquares / Double(raw.count - 2)).squareRoot() / 6.0.squareRoot()
 
         guard amplitude >= minimumAmplitude, amplitude >= 4 * jitter else { return nil }
-        let threshold = max(thresholdFraction * amplitude, 3 * jitter, minimumThreshold)
+        let threshold = max(thresholdFraction * amplitude, jitterMultiple * jitter, minimumThreshold)
         return BreathProfile(axis: axis, amplitude: amplitude, threshold: threshold)
     }
 
@@ -2985,11 +3005,11 @@ nonisolated enum BreathCalibration {
 /// (0.4 s), and a breath is only seen once it has moved by the calibrated threshold from its last
 /// turning point; small wobbles and slow drifts below that never count. No new progress for 0.8 s
 /// means still (a hold). The first guided inhale sets which direction means "in".
-/// APPROXIMATE: a phone resting on a chest; real accuracy is known only on a real iPhone.
+/// APPROXIMATE: a phone held in the hands; real accuracy is known only on a real iPhone.
 nonisolated struct BreathTracker {
-    static let smoothingSeconds    = 0.4
+    static let smoothingSeconds    = 0.5
     static let stillAfterSeconds   = 0.8
-    static let handledAcceleration = 0.06      // smoothed g; above this the phone is being moved
+    static let handledAcceleration = 0.12      // smoothed g; above this the hands are moving the phone
     static let accelerationSmoothingSeconds = 0.3
 
     let profile: BreathProfile
@@ -3111,6 +3131,29 @@ nonisolated enum LungsMotion {
     }
 }
 
+/// Round 5, item 1: every spoken answer in Breathing goes through the chat's SafetyChecker before
+/// anything else. The text is only held in memory for this check and never stored. A match returns the
+/// chat's own crisis response with the help lines for the user's region (988 only for the US, Canada
+/// and US territories); the screen then stops the exercise and shows it.
+enum BreathingSafety {
+    static func crisisResponse(for heard: String, region: String? = SafetyChecker.currentRegion) -> String? {
+        let checker = SafetyChecker()
+        return checker.containsRisk(heard) ? checker.crisisResponse(forRegion: region) : nil
+    }
+}
+
+/// Round 5, item 6: which face the Breathing screen shows. It opens on Alex's intro and flips to the
+/// lungs once the exercise begins; it never flips back.
+nonisolated enum BreathingFace: Equatable {
+    case intro, lungs
+
+    static let first = BreathingFace.intro
+
+    static func after(_ face: BreathingFace, step: BreathingConversation.Step) -> BreathingFace {
+        face == .lungs || step == .begin ? .lungs : .intro
+    }
+}
+
 /// Round 4, item 8: Sign in with Apple. Only the Apple user identifier and the first name are kept, on
 /// this device, under their own two keys; nothing is sent to Jabe. Apple sends the name only on the
 /// first sign-in, so a later sign-in without one keeps the saved name (for the same Apple ID only).
@@ -3163,8 +3206,14 @@ enum AppleSignIn {
             return nil
         case .failure(let error):
             if (error as? ASAuthorizationError)?.code == .canceled { return nil }
-            return "Sign in with Apple isn't available right now. Please try again later."
+            return failureMessage(code: (error as NSError).code)
         }
+    }
+
+    /// Round 5, item 2: the code tells the causes apart. 1000 (unknown) is what iOS returns when the app
+    /// was built without the Sign in with Apple entitlement, or no Apple ID is signed in on the device.
+    static func failureMessage(code: Int) -> String {
+        "Sign in with Apple isn't available right now (error \(code)). Please try again later."
     }
 }
 
@@ -3597,9 +3646,25 @@ final class BreathingVoiceGuide: NSObject, ObservableObject, AVSpeechSynthesizer
 
 // MARK: Box Breathing
 
+/// The card flip between Alex's intro and the lungs: the old face turns away to the left while the new
+/// one turns in from the right.
+private struct BreathingFlip: ViewModifier {
+    let angle: Double
+
+    func body(content: Content) -> some View {
+        content
+            .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0))
+            .opacity(angle == 0 ? 1 : 0)
+    }
+
+    static let transition = AnyTransition.asymmetric(
+        insertion: .modifier(active: BreathingFlip(angle: 90), identity: BreathingFlip(angle: 0)),
+        removal: .modifier(active: BreathingFlip(angle: -90), identity: BreathingFlip(angle: 0)))
+}
+
 struct BreathingExerciseView: View {
 
-    private enum Stage { case starting, talking, listening, cannotHear, settling, running, paused, ended }
+    private enum Stage { case starting, talking, listening, cannotHear, settling, running, paused, ended, crisis }
     private enum Listening { case feeling, answer }
 
     @Environment(\.dismiss) private var dismiss
@@ -3630,6 +3695,8 @@ struct BreathingExerciseView: View {
     @State private var streak: BreathingStreak.State?
     @State private var newBadge: Int?
     @State private var rewardUnlocked = false
+    @State private var face           = BreathingFace.first
+    @State private var crisisText     = ""
     #if DEBUG
     @State private var debugAnswers: [String] = []
     @State private var debugInhalePlan: [Bool] = []
@@ -3640,30 +3707,18 @@ struct BreathingExerciseView: View {
             GeometryReader { geo in
                 // 220 pt on most iPhones; smaller on short screens so the full-size lungs fit.
                 let size = BreathingLayout.circleSize(forHeight: geo.size.height)
-                VStack(spacing: BreathingLayout.columnSpacing) {
-                    Spacer()
-
-                    if sessionDone && rewardUnlocked && stage != .running {
-                        // Same height as the full-size visual, so nothing below moves.
-                        rewardCard(height: size * BreathingLayout.maxScale)
+                ZStack {
+                    if stage == .crisis {
+                        crisisCard
                     } else {
-                        LungsView(size: size, scale: motion.lungScale,
-                                  colors: rewardUnlocked ? BreathingReward.circleColors : [Color.teal, Color.blue],
-                                  ring: rewardUnlocked ? BreathingReward.ringColor : Color.teal)
-                            .padding(.vertical, BreathingLayout.overflow(for: size))   // room for the full-size lungs
+                        // Round 5, item 6: Alex's intro, then a card flip to the lungs (in code, no assets).
+                        // Only the visible face exists, so VoiceOver never reaches the hidden one.
+                        if face == .intro {
+                            introFace.transition(BreathingFlip.transition)
+                        } else {
+                            lungsFace(size: size).transition(BreathingFlip.transition)
+                        }
                     }
-
-                    VStack(spacing: 8) {
-                        Text("Box Breathing").font(.headline)
-                        Text("\(BreathingCueScript.header)\nRepeat \(BreathingCueScript.cycles) cycles for best results")
-                            .font(.caption).foregroundColor(.secondary).multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)   // never cut to one line
-                        statusLines
-                    }
-
-                    controls
-
-                    Spacer()
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
@@ -3717,52 +3772,118 @@ struct BreathingExerciseView: View {
         .accessibilityIdentifier("breathingRewardCard")
     }
 
+    /// Alex's intro face: a placeholder portrait (a circle with "A") until Joel picks one.
+    private var introFace: some View {
+        VStack(spacing: 18) {
+            Spacer()
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [Color.teal, Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text(BreathingCueScript.portraitInitial)
+                    .font(.system(size: 64, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .frame(width: 140, height: 140)
+            .shadow(color: Color.blue.opacity(0.25), radius: 12, y: 6)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Alex, your breathing coach")
+            .accessibilityIdentifier("breathingAlexPortrait")
+            VStack(spacing: 4) {
+                Text(BreathingCueScript.coachName).font(.title2).fontWeight(.semibold)
+                Text("Your breathing coach").font(.subheadline).foregroundColor(.secondary)
+            }
+            coachBubble(caption, always: true)
+            Spacer()
+            streakLine
+            controls
+        }
+    }
+
+    /// Round 5, item 5: below the lungs only the title, the one-line timing, the streak and the voice controls.
+    private func lungsFace(size: CGFloat) -> some View {
+        VStack(spacing: BreathingLayout.columnSpacing) {
+            Spacer()
+            VStack(spacing: 8) {
+                betaChip
+                coachBubble(caption, always: false)
+            }
+            if sessionDone && rewardUnlocked && stage != .running {
+                // Same height as the full-size visual, so nothing below moves.
+                rewardCard(height: size * BreathingLayout.maxScale)
+            } else {
+                LungsView(size: size, scale: motion.lungScale,
+                          colors: rewardUnlocked ? BreathingReward.circleColors : [Color.teal, Color.blue],
+                          ring: rewardUnlocked ? BreathingReward.ringColor : Color.teal)
+                    .padding(.vertical, BreathingLayout.overflow(for: size))   // room for the full-size lungs
+            }
+            VStack(spacing: 8) {
+                Text("Box Breathing").font(.headline)
+                Text(BreathingCueScript.header)
+                    .font(.caption).foregroundColor(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                streakLine
+            }
+            controls
+            Spacer()
+        }
+    }
+
+    /// Round 5, item 4: breath detection is approximate.
+    private var betaChip: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "waveform.path").font(.caption)
+            Text(BreathingCueScript.betaLabel).font(.caption)
+            Text(BreathingCueScript.betaTag)
+                .font(.caption2).fontWeight(.bold)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Capsule().fill(Color.orange.opacity(0.18)))
+                .foregroundColor(.orange)
+        }
+        .foregroundColor(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Breath detection, beta")
+        .accessibilityIdentifier("breathingBeta")
+    }
+
+    /// Alex's words in a small bubble. On the lungs face they show only between breaths (questions,
+    /// pauses, endings) or with the voice off; while she counts, she is only heard.
+    @ViewBuilder private func coachBubble(_ text: String, always: Bool) -> some View {
+        let quiet = !always && voiceEnabled && (stage == .running || stage == .settling)
+        let lines = (quiet || text.isEmpty ? [] : [text])
+            + (stage == .paused ? [BreathingCueScript.pauseTip] : [])
+            + (listeningNote.isEmpty ? [] : [listeningNote])
+        if !lines.isEmpty {
+            Text(lines.joined(separator: "\n"))
+                .font(.footnote).foregroundColor(.secondary).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color.secondary.opacity(0.1)))
+                .accessibilityIdentifier("breathingCaption")
+        }
+    }
+
     private var streakLine: some View {
-        Text(shownStreak > 0 ? "🔥 \(shownStreak)-day breathing streak" : "🔥 Start your breathing streak today")
+        let base = shownStreak > 0 ? "🔥 \(shownStreak)-day breathing streak" : "🔥 Start your breathing streak today"
+        return Text(newBadge.map { base + " · 🏅 \($0)-day badge" } ?? base)
             .font(.subheadline).fontWeight(.semibold).foregroundColor(.teal)
             .accessibilityIdentifier("breathingStreak")
     }
 
-    private var captionText: some View {
-        Text(caption)
-            .font(.footnote).foregroundColor(.secondary).multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("breathingCaption")
-    }
-
-    private var cycleText: String {
-        "Cycle \(min(coach.completedCycles + 1, BreathingCueScript.cycles)) of \(BreathingCueScript.cycles)"
-    }
-
-    @ViewBuilder private var statusLines: some View {
-        switch stage {
-        case .running:
-            Text(cycleText + (currentPhase.map { " · \($0.label)" } ?? ""))
-                .font(.subheadline).foregroundColor(.teal)
-                .accessibilityIdentifier("breathingCycle")
-            Text("Alex is following your breathing through the phone's motion sensor.")
-                .font(.caption2).foregroundColor(.secondary).multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        case .paused:
-            Text("Paused · \(cycleText)").font(.subheadline).foregroundColor(.teal)
-                .accessibilityIdentifier("breathingCycle")
-            captionText
-            Text(BreathingCueScript.pauseTip).font(.caption2).foregroundColor(.secondary)
-        default:
-            if sessionDone {
-                streakLine
-                if let newBadge {
-                    Text("🏅 New badge: \(newBadge) days in a row").font(.caption)
-                } else if let badge = BreathingStreak.highestBadge(for: shownStreak) {
-                    Text("🏅 \(badge)-day badge").font(.caption).foregroundColor(.secondary)
-                }
+    /// Round 5, item 1: the chat's own crisis response with the region's help lines. Nothing else runs.
+    private var crisisCard: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                Image(systemName: "heart.fill").font(.largeTitle).foregroundColor(.pink)
+                Text(crisisText)
+                    .font(.body)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("breathingCrisis")
             }
-            if !caption.isEmpty { captionText }
-            if !listeningNote.isEmpty {
-                Text(listeningNote).font(.caption).foregroundColor(.teal)
-                    .accessibilityIdentifier("breathingListening")
-            }
-            if !sessionDone { streakLine }
+            .padding(20)
+            .background(RoundedRectangle(cornerRadius: 20).fill(Color.secondary.opacity(0.08)))
+            .padding(.top, 24)
         }
     }
 
@@ -3840,6 +3961,11 @@ struct BreathingExerciseView: View {
     private func perform(_ next: BreathingConversation.Step, _ thisRun: Int) {
         step = next
         listeningNote = ""
+        let nextFace = BreathingFace.after(face, step: next)
+        if nextFace != face {
+            caption = ""
+            withAnimation(.easeInOut(duration: 0.8)) { face = nextFace }
+        }
         switch next {
         case .askFeeling:
             stage = .talking
@@ -3853,7 +3979,7 @@ struct BreathingExerciseView: View {
             caption = quoted(lines)
             say(lines, thisRun) { listen(for: .answer, thisRun) }
         case .begin:
-            startExercise(thisRun)
+            after(0.9, thisRun) { startExercise(thisRun) }     // let the flip to the lungs finish first
         case .endGently:
             endGently(BreathingCueScript.declined)
         case .askAnotherRound(let attempt):
@@ -3865,6 +3991,8 @@ struct BreathingExerciseView: View {
             goAgain(thisRun)
         case .goodbye:
             endGently(BreathingCueScript.goodbye)
+        case .crisis:
+            break                                            // handled by showCrisis; nothing follows
         }
     }
 
@@ -3888,6 +4016,7 @@ struct BreathingExerciseView: View {
             let silent    = raw == "silent"
             after(silent ? BreathingCueScript.listenSeconds : 1.5, thisRun) {
                 guard stage == .listening else { return }
+                if showCrisisIfNeeded(raw) { return }
                 answered(purpose == .feeling ? (silent ? .feelingSilent : .feelingHeard)
                                              : .ready(silent ? nil : ReadyAnswer.parse(raw)), thisRun)
             }
@@ -3902,6 +4031,7 @@ struct BreathingExerciseView: View {
         listener.startRecording()
         after(BreathingCueScript.listenSeconds, thisRun) {
             guard stage == .listening else { return }
+            if showCrisisIfNeeded(listener.transcript) { return }
             let heardSomething = !listener.transcript.trimmingCharacters(in: .whitespaces).isEmpty
             stopListening()
             answered(purpose == .feeling ? (heardSomething ? .feelingHeard : .feelingSilent) : .ready(nil), thisRun)
@@ -3912,6 +4042,7 @@ struct BreathingExerciseView: View {
     /// still talking. A yes/no answer is matched and then discarded.
     private func heard(_ said: String) {
         guard stage == .listening, !said.isEmpty else { return }
+        if showCrisisIfNeeded(said) { return }            // round 5: the safety check comes first
         let thisRun = run
         switch listeningFor {
         case .feeling:
@@ -3932,6 +4063,25 @@ struct BreathingExerciseView: View {
     private func answered(_ event: BreathingConversation.Event, _ thisRun: Int) {
         guard run == thisRun, isActive else { return }
         perform(BreathingConversation.next(after: step, event), thisRun)
+    }
+
+    /// Round 5, item 1: every answer (the feelings answer and every yes/no) goes through SafetyChecker
+    /// first, in memory only. A match stops the microphone, the voice, the sensor and every pending step,
+    /// and shows the chat's crisis response. No breathing and no "another round?" follow.
+    private func showCrisisIfNeeded(_ said: String) -> Bool {
+        guard let response = BreathingSafety.crisisResponse(for: said) else { return false }
+        stopListening()
+        run          += 1                                  // every pending step is now stale
+        guide.stop()
+        motion.stop()
+        motion.settleLungs()
+        crisisText    = response
+        caption       = ""
+        listeningNote = ""
+        currentPhase  = nil
+        step          = BreathingConversation.next(after: step, .crisis)
+        stage         = .crisis
+        return true
     }
 
     /// Closes this screen's microphone. Called before the exercise starts and on every way out.

@@ -961,6 +961,32 @@ struct SafetyCheckerTests {
         #expect(SafetyChecker().containsRisk(text))
     }
 
+    // Round 5 (Joel, 2026-11-17): his exact answer to the breathing coach, and the same sentence with
+    // other apostrophes, punctuation and capitals. "kill myself" must match in every form.
+    @Test(arguments: [
+        "I am not good want to kill myself",
+        "I\u{2019}m not good, want to KILL MYSELF!!",
+        "i'm not good... want to kill myself.",
+        "I AM NOT GOOD WANT TO KILL MYSELF",
+        "I am not good \u{2014} want to kill-myself",
+    ])
+    func joelsBreathingAnswerIsACrisis(_ text: String) {
+        #expect(SafetyChecker().containsRisk(text))
+        #expect(["kill myself", "kill-myself"].contains(SafetyChecker().matchedPhrase(text) ?? ""))
+    }
+
+    // Common phrasings, especially from dictation ("do not" instead of "don't", "my self" as two
+    // words), that the list missed before round 5.
+    @Test(arguments: [
+        "I want to kill my self",
+        "I do not want to live anymore",
+        "I don't want to be alive",
+        "i do not want to be alive",
+    ])
+    func flagsDictatedPhrasings(_ text: String) {
+        #expect(SafetyChecker().containsRisk(text))
+    }
+
     // Everyday figures of speech must still reach the AI rather than get the crisis response.
     @Test(arguments: [
         "I'm dying to see the new movie",
@@ -971,6 +997,8 @@ struct SafetyCheckerTests {
         "I had a really rough day at work",
         "I never wake up on time",
         "we're spending it with family this weekend",
+        "I need to kill my self-doubt",
+        "I'm good, ready to breathe",
     ])
     func leavesEverydayFiguresOfSpeechAlone(_ text: String) {
         #expect(!SafetyChecker().containsRisk(text))
@@ -1175,27 +1203,48 @@ struct BreathingCueScriptTests {
         #expect(lines.allSatisfy { !$0.contains("…") && !$0.contains("...") })
     }
 
+    // Round 5, item 6: the intro screen. Alex introduces herself and says she'll guide the breathing.
     @Test func greetsByFirstNameWhenKnownOtherwiseHiThere() {
         #expect(BreathingCueScript.opening(name: nil)
-                == "Hi there, I'm Alex, your breathing coach. It's so nice to see you. How are you feeling right now?")
+                == "Hi there, I'm Alex. I'll guide your breathing today. How are you feeling right now?")
         #expect(BreathingCueScript.opening(name: "Sam")
-                == "Hi Sam, I'm Alex, your breathing coach. It's so nice to see you. How are you feeling right now?")
+                == "Hi Sam, I'm Alex. I'll guide your breathing today. How are you feeling right now?")
         #expect(BreathingCueScript.opening(name: "  ") == BreathingCueScript.opening(name: nil))
     }
 
     @Test func conversationLinesAreWarm() {
         #expect(BreathingCueScript.coachName     == "Alex")
         #expect(BreathingCueScript.thanks        == "Thank you for sharing that with me.")
-        #expect(BreathingCueScript.readyQuestion == "Are you ready to breathe together?")
-        #expect(BreathingCueScript.readyAgain    == "Take your time. Just say yes when you'd like to begin.")
+        #expect(BreathingCueScript.readyQuestion == "Are you ready to start?")
+        #expect(BreathingCueScript.readyAgain    == "Take your time. Just say yes when you'd like to start.")
         #expect(BreathingCueScript.declined      == "That's completely okay. I'll be right here whenever you'd like to breathe together.")
     }
 
+    // Round 5, item 3: the phone is held in the hands, never rested on the body.
     @Test func calibrationLinesAskForNaturalBreathing() {
-        #expect(BreathingCueScript.settle         == "Let's get comfortable first. Rest your phone gently on your chest.")
+        #expect(BreathingCueScript.settle         == "Let's get comfortable first. Hold your phone gently in both hands, close to you, and keep it as still as you can.")
         #expect(BreathingCueScript.calibrate      == "Now breathe in and out naturally, and I'll follow along with you.")
-        #expect(BreathingCueScript.calibrateAgain == "I couldn't quite feel your breathing yet, and that's okay. Let's try once more. Breathe in and out naturally, with your phone resting on your chest.")
+        #expect(BreathingCueScript.calibrateAgain == "I couldn't quite feel your breathing yet, and that's okay. Let's try once more. Hold your phone gently and still, and breathe in and out naturally.")
         #expect(BreathingCueScript.letsBegin      == "Lovely, I can feel your breathing. Let's take a slow breath in together.")
+    }
+
+    @Test func neverAsksToRestThePhoneOnTheBody() {
+        let everything = BreathingCueScript.allSpokenLines(name: "Sam") + [BreathingCueScript.pauseTip, BreathingCueScript.betaLabel]
+        for word in ["chest", "belly", "on your body", "radiation"] {
+            #expect(everything.allSatisfy { !$0.lowercased().contains(word) }, "\(word)")
+        }
+        #expect(BreathingCueScript.pauseTip == "Tip: hold your phone gently and keep it still while you breathe.")
+    }
+
+    // Round 5, item 4: breath detection is approximate, so it carries a small Beta label.
+    @Test func breathDetectionIsLabelledBeta() {
+        #expect(BreathingCueScript.betaLabel == "Breath detection")
+        #expect(BreathingCueScript.betaTag == "BETA")
+    }
+
+    // Round 5, item 6: placeholder portrait until Joel picks one.
+    @Test func placeholderPortraitIsTheLetterA() {
+        #expect(BreathingCueScript.portraitInitial == "A")
     }
 
     // Round 4, item 6: the pause line Joel asked for, and no "three misses" ending any more.
@@ -1286,6 +1335,15 @@ struct BreathingConversationTests {
         let second = BreathingConversation.next(after: .askAnotherRound(attempt: 1), .ready(nil))
         #expect(second == .askAnotherRound(attempt: 2))
         #expect(BreathingConversation.next(after: second, .ready(nil)) == .goodbye)
+    }
+
+    // Round 5, item 1: a crisis answer stops everything, from any step, and nothing follows it.
+    @Test func aCrisisAnswerStopsTheConversationFromAnyStep() {
+        let steps: [BreathingConversation.Step] = [.askFeeling, .askReady(attempt: 1, thankFirst: true),
+                                                   .askAnotherRound(attempt: 1), .begin, .goAgain]
+        for step in steps { #expect(BreathingConversation.next(after: step, .crisis) == .crisis) }
+        #expect(BreathingConversation.next(after: .crisis, .ready(.yes)) == .crisis)
+        #expect(BreathingConversation.next(after: .crisis, .feelingHeard) == .crisis)
     }
 
     @Test func eventsThatDoNotFitTheStepChangeNothing() {
@@ -1491,6 +1549,15 @@ enum SyntheticChest {
     }
 
     static var profile: BreathProfile? { BreathCalibration.profile(from: natural()) }
+
+    /// Round 5: a phone held in the hands. Hand tremor adds a fast wobble (`tremor` degrees) and some
+    /// movement (`accel` g) on top of the breathing tilt. Deterministic, so the tests never flake.
+    static func handHeld(start: Double, seconds: Double, tremor: Double = 0.06, accel: Double = 0.05,
+                         tilt: @escaping (Double) -> Double) -> [BreathMotionSample] {
+        samples(start: start, seconds: seconds, accel: accel) { t in
+            tilt(t) + tremor * sin(t * 47) * cos(t * 31)
+        }
+    }
 }
 
 // Round 4, item 7: one cycle of natural breathing sets the detector's axis and thresholds.
@@ -1517,6 +1584,13 @@ struct BreathCalibrationTests {
     @Test func aPhoneBeingHandledGivesNoProfile() {
         let handled = SyntheticChest.samples(start: 0, seconds: 8, accel: 0.2) { t in 0.6 * sin(t) }
         #expect(BreathCalibration.profile(from: handled) == nil)
+    }
+
+    // Round 5, item 3: held in the hands, tremor and a little movement must not stop calibration.
+    @Test func aHandHeldPhoneStillCalibrates() throws {
+        let natural = SyntheticChest.handHeld(start: 0, seconds: 8) { t in 0.8 * (1 - cos(2 * .pi * t / 5)) / 2 }
+        let profile = try #require(BreathCalibration.profile(from: natural))
+        #expect(profile.threshold >= BreathCalibration.thresholdFraction * profile.amplitude - 1e-12)
     }
 
     @Test func tooLittleDataGivesNoProfile() {
@@ -1569,6 +1643,35 @@ struct BreathTrackerTests {
         let seen = feed(&tracker, SyntheticChest.ramp(start: 0, from: 0, to: 1), learnInhale: false)
         #expect(seen.allSatisfy { $0 == .still || $0 == .unknown })
         #expect(tracker.movement == .rising)
+    }
+
+    // Round 5, item 3: held in the hands. A guided breath is still seen through hand tremor, and tremor
+    // plus a slow small drift alone is never a breath.
+    @Test func handHeldBreathingIsSeenThroughTremor() throws {
+        let calibration = SyntheticChest.handHeld(start: 0, seconds: 8) { t in 0.8 * (1 - cos(2 * .pi * t / 5)) / 2 }
+        var tracker = BreathTracker(profile: try #require(BreathCalibration.profile(from: calibration)))
+        let inhale = feed(&tracker, SyntheticChest.handHeld(start: 8, seconds: 3) { t in 1.2 * min(1, (t - 8) / 2.95) },
+                          learnInhale: true)
+        #expect(inhale.contains(.inhaling))
+        let exhale = feed(&tracker, SyntheticChest.handHeld(start: 11, seconds: 3) { t in 1.2 * (1 - min(1, (t - 11) / 2.95)) })
+        #expect(exhale.contains(.exhaling))
+    }
+
+    @Test func handTremorAloneIsNotABreath() throws {
+        let calibration = SyntheticChest.handHeld(start: 0, seconds: 8) { t in 0.8 * (1 - cos(2 * .pi * t / 5)) / 2 }
+        var tracker = BreathTracker(profile: try #require(BreathCalibration.profile(from: calibration)))
+        let seen = feed(&tracker, SyntheticChest.handHeld(start: 8, seconds: 10) { t in 0.05 * sin((t - 8) / 2) },
+                        learnInhale: true)
+        #expect(seen.allSatisfy { $0 == .still || $0 == .unknown })
+    }
+
+    // Moving the hands (more than 0.12 g) is "can't tell", not a breath.
+    @Test func movingTheHandsIsHandled() throws {
+        var tracker = BreathTracker(profile: try #require(SyntheticChest.profile))
+        let seen = feed(&tracker, SyntheticChest.ramp(start: 0, from: 0, to: 1, accel: 0.2), learnInhale: true)
+        #expect(tracker.movement == .handled)
+        #expect(!seen.contains(.inhaling))
+        #expect(BreathTracker.handledAcceleration == 0.12)
     }
 
     @Test func aPhoneBeingHandledIsUnknown() throws {
@@ -1774,6 +1877,71 @@ struct AppleAccountTests {
             #expect(AppleAccount.givenName(in: defaults) == nil)
             #expect(defaults.persistentDomain(forName: suite)?.keys.sorted() == ["breathingStreakCurrent"])
         }
+    }
+}
+
+// Round 5, item 1 (Joel's report): "I am not good want to kill myself" was answered with "Thank you for
+// sharing." Every spoken answer in Breathing now goes through the chat's SafetyChecker first, in memory
+// only, and a match shows the chat's own crisis response with the region's help lines.
+@MainActor
+struct BreathingSafetyTests {
+
+    @Test(arguments: [
+        "I am not good want to kill myself",
+        "I\u{2019}m not good, want to KILL MYSELF!!",
+        "i am not good want to kill my self",
+    ])
+    func joelsAnswerGetsTheChatsCrisisResponse(_ said: String) throws {
+        let response = try #require(BreathingSafety.crisisResponse(for: said, region: "US"))
+        #expect(response == SafetyChecker().crisisResponse(forRegion: "US"))
+        #expect(response.contains("988"))
+    }
+
+    // Help lines follow the Region setting, as in the chat: 988 only for the US, Canada and US territories.
+    @Test func helpLinesFollowTheRegion() throws {
+        let ph = try #require(BreathingSafety.crisisResponse(for: "I want to kill myself", region: "PH"))
+        #expect(ph.contains("1553"))
+        #expect(!ph.contains("988"))
+        let ca = try #require(BreathingSafety.crisisResponse(for: "I want to kill myself", region: "CA"))
+        #expect(ca.contains("988"))
+    }
+
+    @Test(arguments: ["yes", "no", "I'm good, ready to breathe", "a bit tired but okay", "", "this day is killing me"])
+    func everydayAnswersAreNotACrisis(_ said: String) {
+        #expect(BreathingSafety.crisisResponse(for: said, region: "US") == nil)
+    }
+}
+
+// Round 5, item 6: Breathing opens on Alex's intro screen and flips to the lungs once you say yes;
+// it never flips back. A "no" or a crisis stays on the intro screen.
+struct BreathingFaceTests {
+
+    @Test func flipsToTheLungsWhenTheExerciseBegins() {
+        #expect(BreathingFace.first == .intro)
+        #expect(BreathingFace.after(.intro, step: .askFeeling) == .intro)
+        #expect(BreathingFace.after(.intro, step: .askReady(attempt: 1, thankFirst: true)) == .intro)
+        #expect(BreathingFace.after(.intro, step: .begin) == .lungs)
+    }
+
+    @Test func noOrACrisisStaysOnTheIntro() {
+        #expect(BreathingFace.after(.intro, step: .endGently) == .intro)
+        #expect(BreathingFace.after(.intro, step: .crisis) == .intro)
+    }
+
+    @Test func neverFlipsBack() {
+        #expect(BreathingFace.after(.lungs, step: .askAnotherRound(attempt: 1)) == .lungs)
+        #expect(BreathingFace.after(.lungs, step: .goodbye) == .lungs)
+        #expect(BreathingFace.after(.lungs, step: .crisis) == .lungs)
+    }
+}
+
+// Round 5, item 2: the sign-in failure names Apple's error code, so the cause can be told apart
+// (1000 = the app was built without the Sign in with Apple entitlement, or no Apple ID on the device).
+struct AppleSignInMessageTests {
+
+    @Test func failureMessageNamesTheErrorCode() {
+        #expect(AppleSignIn.failureMessage(code: 1000)
+                == "Sign in with Apple isn't available right now (error 1000). Please try again later.")
     }
 }
 
