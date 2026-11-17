@@ -289,7 +289,7 @@ final class SafetyChecker {
     // Lowercases, drops apostrophes of any style (the iPhone keyboard types a curly ’ by default,
     // and many people type none), turns other punctuation and whitespace runs into single spaces,
     // and pads both ends, so phrases match whole words only ("ending it" no longer hits "spending it").
-    private static func normalized(_ text: String) -> String {
+    nonisolated private static func normalized(_ text: String) -> String {
         let words = text.lowercased()
             .replacingOccurrences(of: "['\u{2018}\u{2019}\u{02BC}]", with: "", options: .regularExpression)
             .replacingOccurrences(of: "[^\\p{L}\\p{N}-]+", with: " ", options: .regularExpression)
@@ -1131,7 +1131,7 @@ final class AIService {
         // A 401 means the cached token was refused (expired early, or the Worker lost the key).
         // Drop it and retry once with a fresh one before surfacing anything to the user.
         if (response as? HTTPURLResponse)?.statusCode == 401 {
-            await Self.attestation.invalidateToken()
+            Self.attestation.invalidateToken()
             (data, response) = try await authorizedData(for: request)
         }
 
@@ -1197,7 +1197,7 @@ final class AIService {
 
         guard var (data, resp) = try? await authorizedData(for: req) else { return "" }
         if (resp as? HTTPURLResponse)?.statusCode == 401 {
-            await Self.attestation.invalidateToken()
+            Self.attestation.invalidateToken()
             guard let retry = try? await authorizedData(for: req) else { return "" }
             (data, resp) = retry
         }
