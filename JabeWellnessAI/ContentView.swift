@@ -14,6 +14,7 @@ import Speech
 import AVFoundation
 import StoreKit
 import Security
+import AuthenticationServices
 
 //*======================================================================*//
 // MARK: - Secrets
