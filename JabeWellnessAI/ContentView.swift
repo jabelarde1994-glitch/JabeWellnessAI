@@ -2056,6 +2056,68 @@ struct OnboardingPageView: View {
 }
 
 //*======================================================================*//
+// MARK: - TikTok connect (identity only: the app shows the display name; no TikTok token is kept)
+
+enum TikTokConnectError: LocalizedError {
+    case unavailable
+    case failed
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: return "TikTok connect is not available right now. Try again later."
+        case .failed:      return "TikTok did not connect. Try again."
+        }
+    }
+}
+
+final class TikTokWebAuth: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = TikTokWebAuth()
+    private var session: ASWebAuthenticationSession?
+
+    /// Runs the TikTok sign-in sheet and returns the jabewellness:// callback URL.
+    @MainActor
+    func run(url: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            let webSession = ASWebAuthenticationSession(url: url, callbackURLScheme: "jabewellness") { callback, error in
+                self.session = nil
+                if let callback {
+                    continuation.resume(returning: callback)
+                } else {
+                    continuation.resume(throwing: error ?? TikTokConnectError.failed)
+                }
+            }
+            webSession.prefersEphemeralWebBrowserSession = true
+            webSession.presentationContextProvider = self
+            self.session = webSession
+            webSession.start()
+        }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+        return windows.first(where: { $0.isKeyWindow }) ?? windows.first ?? UIWindow()
+    }
+}
+
+extension AIService {
+    /// Asks the Worker for a TikTok authorize link (user.info.basic only), using the same
+    /// App Attest credential as chat.
+    func tikTokConnectURL() async throws -> URL {
+        var request = URLRequest(url: Self.workerBaseURL.appendingPathComponent("tiktok/connect/start"))
+        request.httpMethod = "POST"
+        let (data, response) = try await authorizedData(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let link = json["authorize_url"] as? String,
+              let url = URL(string: link) else {
+            throw TikTokConnectError.unavailable
+        }
+        return url
+    }
+}
+
 // MARK: - Settings View
 //*======================================================================*//
 
@@ -2066,6 +2128,33 @@ struct SettingsView: View {
     @AppStorage("colorSchemePreference") private var colorSchemePreference = "system"
     @AppStorage("reminderEnabled")       private var reminderEnabled       = false
     @State private var reminderTime      = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
+    @State private var tiktokBusy        = false
+    @State private var tiktokStatus: String?
+    private let aiService = AIService()
+
+    private func connectTikTok() {
+        tiktokBusy = true
+        tiktokStatus = nil
+        Task {
+            defer { tiktokBusy = false }
+            do {
+                let start = try await aiService.tikTokConnectURL()
+                let callback = try await TikTokWebAuth.shared.run(url: start)
+                let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                let status = items.first(where: { $0.name == "status" })?.value
+                let name = items.first(where: { $0.name == "name" })?.value
+                if status == "ok", let name, !name.isEmpty {
+                    tiktokStatus = "Connected as \(name)."
+                } else {
+                    tiktokStatus = TikTokConnectError.failed.errorDescription
+                }
+            } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+                tiktokStatus = nil
+            } catch {
+                tiktokStatus = (error as? LocalizedError)?.errorDescription ?? TikTokConnectError.failed.errorDescription
+            }
+        }
+    }
     @State private var showClearConfirm  = false
 
     /// Read from the bundle rather than hardcoded — the old literal "1.0.0" was already wrong
@@ -2144,6 +2233,22 @@ struct SettingsView: View {
                     LabeledContent("Developer", value: "Jabe")
                     LabeledContent("AI Model",  value: AIService.modelDisplayName)
                     LabeledContent("Storage",   value: "Local device")
+                }
+
+                Section {
+                    Button {
+                        connectTikTok()
+                    } label: {
+                        Text(tiktokBusy ? "Connecting…" : "Connect TikTok")
+                    }
+                    .disabled(tiktokBusy)
+                    if let tiktokStatus {
+                        Text(tiktokStatus)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("Shows the TikTok name you connect with. Jabe does not store your TikTok sign-in.")
                 }
             }
             .navigationTitle("Settings")
