@@ -526,7 +526,7 @@ final class StreakManager: ObservableObject {
 enum ReviewPromptGate {
 
     static let minStreak        = 3
-    static let minInstallDays   = 7
+    static let minInstallDays   = 3
     static let minDaysBetween   = 120
 
     static func shouldAsk(longestStreak: Int, installDate: Date?, lastAsked: Date?,

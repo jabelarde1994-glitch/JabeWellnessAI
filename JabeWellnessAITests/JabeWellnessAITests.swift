@@ -662,9 +662,9 @@ struct ReviewPromptGateTests {
 
     @Test func doesNotAskBeforeAThreeDayStreak() { #expect(!ask(streak: 2)) }
 
-    @Test func doesNotAskInTheFirstWeek() { #expect(!ask(install: days(6))) }
+    @Test func doesNotAskBeforeThreeDaysInstalled() { #expect(!ask(streak: 3, install: days(2))) }
 
-    @Test func asksOnceTheInstallIsSevenDaysOld() { #expect(ask(install: days(7))) }
+    @Test func asksOnceTheInstallIsThreeDaysOldWithAThreeDayStreak() { #expect(ask(streak: 3, install: days(3))) }
 
     @Test func doesNotAskWithoutAnInstallDate() {
         #expect(!ReviewPromptGate.shouldAsk(longestStreak: 5, installDate: nil, lastAsked: nil,
